@@ -24,6 +24,8 @@ from argparse import ArgumentParser, Namespace
 from arguments import ModelParams, PipelineParams, OptimizationParams
 import itertools
 import numpy as np
+import matplotlib.pyplot as plt
+
 try:
     from torch.utils.tensorboard import SummaryWriter
     TENSORBOARD_FOUND = True
@@ -85,6 +87,9 @@ def training(gaussians, scene, stage, tb_writer, dataset, opt, pipe, test_every,
             robot_mask = viewpoint_cam.robot_mask.cuda()
             gt_image = gt_image * robot_mask + background.reshape(-1, 1, 1) * ~robot_mask
 
+        # show the image and the gt_image
+        if stage == 'pose_conditioned' and iteration % 1000 == 0:
+            plot_and_save_images(dataset, image, gt_image, iteration, tb_writer)
         Ll1 = l1_loss(image, gt_image)
         loss = (1.0 - opt.lambda_dssim) * Ll1 + opt.lambda_dssim * (1.0 - ssim(image, gt_image))
         loss.backward()
@@ -118,7 +123,7 @@ def training(gaussians, scene, stage, tb_writer, dataset, opt, pipe, test_every,
 
                 if iteration > opt.densify_from_iter and iteration % opt.densification_interval == 0:
                     size_threshold = 20 if iteration > opt.opacity_reset_interval else None
-                    gaussians.densify_and_prune(opt.densify_grad_threshold, 0.005, scene.cameras_extent, size_threshold)
+                    gaussians.densify_and_prune(opt.densify_grad_threshold, opt.min_opacity, scene.cameras_extent, size_threshold)
                 
                 if iteration % opt.opacity_reset_interval == 0 or (dataset.white_background and iteration == opt.densify_from_iter):
                     gaussians.reset_opacity()
@@ -175,6 +180,18 @@ def prepare_output_and_logger(args, experiment_name):
     else:
         print("Tensorboard not available: not logging progress")
     return tb_writer
+
+def plot_and_save_images(args, image, gt_image, iteration, tb_writer):
+    fig, ax = plt.subplots(1, 2)
+    ax[0].imshow(image.permute(1, 2, 0).detach().cpu().numpy())
+    ax[1].imshow(gt_image.permute(1, 2, 0).detach().cpu().numpy())
+    # subtitle
+    ax[0].set_title('Rendered Image')
+    ax[1].set_title('Ground Truth Image')
+    plt.savefig("{}/iter_{}.png".format(args.model_path, iteration))
+    if tb_writer:
+        tb_writer.add_image('Rendered Image', image, global_step=iteration)
+        tb_writer.add_image('Ground Truth Image', gt_image, global_step=iteration)
 
 def training_report(tb_writer, iteration, Ll1, loss, l1_loss, elapsed, testing_iterations, scene : RobotScene, renderFunc, background, stage):
     if tb_writer:
@@ -244,7 +261,7 @@ if __name__ == "__main__":
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=False)
     parser.add_argument("--test_every", type=int, default=400)
-    parser.add_argument("--save_every", type=int, default=4000)
+    parser.add_argument("--save_every", type=int, default=1000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_every", type=int, default=4000)
     parser.add_argument("--start_checkpoint", type=str, default = None)
