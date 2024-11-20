@@ -458,6 +458,7 @@ class GaussianModel:
         self.prune_points(prune_mask)
 
         torch.cuda.empty_cache()
+        print(f"Number of Gaussians after pruning: {self.get_opacity.shape[0]}")
 
     def add_densification_stats(self, viewspace_point_tensor, update_filter, width, height):
 
