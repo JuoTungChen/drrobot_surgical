@@ -67,6 +67,9 @@ class RobotDataset(Dataset):
 
         if stage == 'canonical':
             self.data_dirs = [d for d in glob.glob(os.path.join(self.dataset_path, "canonical_sample_*")) if os.path.isdir(d)]
+            # only use the first  canonical sample for now
+            # self.data_dirs = self.data_dirs[400:410] 
+            print(f"[RobotDataset] Using {len(self.data_dirs)} canonical samples")
         else:
             self.data_dirs = [d for d in glob.glob(os.path.join(self.dataset_path, "sample_*")) if os.path.isdir(d)]
 
@@ -75,15 +78,18 @@ class RobotDataset(Dataset):
     def normalize_joint_positions(self, joint_positions):
 
         #normalize between [-1, 1]
-        lower_limits = self.joint_limits[:, 0]
-        upper_limits = self.joint_limits[:, 1]
+        tolerance = 1e-6
+        lower_limits = self.joint_limits[:, 0] - tolerance
+        upper_limits = self.joint_limits[:, 1] + tolerance
         scale = 2 / (upper_limits - lower_limits)
         normalized_joint_positions = (joint_positions - lower_limits) * scale - 1.
+        # print("normalized_joint_positions", normalized_joint_positions)
 
         assert lower_limits.shape == joint_positions.shape, f"{lower_limits.shape} != {joint_positions.shape}"
         assert joint_positions.shape == normalized_joint_positions.shape, f"{joint_positions.shape} != {normalized_joint_positions.shape}"
 
         assert np.abs(normalized_joint_positions).max() <= 1.0 + 1e-6
+        assert len(normalized_joint_positions) == self.n_joints
       
         return normalized_joint_positions
 
@@ -96,7 +102,6 @@ class RobotDataset(Dataset):
         generator = np.random.RandomState(self.iters)
         idx = generator.choice(len(self.data_dirs))
         self.iters += 1
-
         data_dir = self.data_dirs[idx]
         try:
             images = glob.glob(os.path.join(data_dir, "image_*.jpg"))
@@ -120,6 +125,10 @@ class RobotDataset(Dataset):
 
             extrinsic_matrix = extrinsics_matrices[img_idx]
             joint_params = self.normalize_joint_positions(raw_joint_params)
+            if joint_params is None:
+                print("Joint params are None, skipping...")
+                return self.__getitem__(idx + 1)
+
         except Exception as e:
             print(f"Error {e} loading data, skipping...")
             return self.__getitem__(idx + 1)
