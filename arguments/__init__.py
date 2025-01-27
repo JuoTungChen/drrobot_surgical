@@ -86,7 +86,7 @@ class OptimizationParams(ParamGroup):
         self.densification_interval = 100
         self.opacity_reset_interval = 10000
         self.densify_from_iter = 500
-        self.densify_until_iter = 5_000
+        self.densify_until_iter = 15_000
         self.densify_grad_threshold = 0.0002
         self.random_background = True
 
@@ -135,12 +135,12 @@ class OptimizationParams(ParamGroup):
         #### lrs + dr.robot params ####
         self.learn_rotations = False
         self.lambda_depth = 0.5
-        self.canonical_training_iterations = 4_000
-        self.pose_conditioned_training_iterations = 15_000
+        self.canonical_training_iterations = 2_000
+        self.pose_conditioned_training_iterations = 60_000
 
         self.lrs_train_steps = 1e6 #minimum of this and the number of samples in dataset
-        self.lrs_train_epochs = 2
-        self.lrs_lr = 1e-4
+        self.lrs_train_epochs = 1
+        self.lrs_lr = 3e-4
 
         self.appearance_deform_lr = 1e-5
         self.no_appearance_deformation = True
