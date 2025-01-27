@@ -110,18 +110,23 @@ def render(viewpoint_camera,
         sh_degree=sh_degree,
     )
 
+    # Generate the silhouette from the alpha channel
+    silhouette = render_alphas[0, :, :, 0]  # [H, W]
+    silhouette = silhouette / silhouette.max()  # Normalize to [0, 1]
+
+    
     # [1, H, W, 3] -> [3, H, W]
     rendered_image = render_colors[0].permute(2, 0, 1)
-    radii = info["radii"].squeeze(0) # [N,]
+    radii = info["radii"].squeeze(0)  # [N,]
     try:
-        info["means2d"].retain_grad() # [1, N, 2]
+        info["means2d"].retain_grad()  # [1, N, 2]
     except:
         pass
 
-
-    # Those Gaussians that were frustum culled or had a radius of 0 were not visible.
-    # They will be excluded from value updates used in the splitting criteria.
-    return {"render": rendered_image,
-            "viewspace_points": info["means2d"],
-            "visibility_filter" : radii > 0,
-            "radii": radii}
+    return {
+        "render": rendered_image,
+        "viewspace_points": info["means2d"],
+        "visibility_filter": radii > 0,
+        "radii": radii,
+        "silhouette": silhouette
+    }
