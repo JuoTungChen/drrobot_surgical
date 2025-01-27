@@ -11,7 +11,7 @@ from PIL import Image
 from utils.mujoco_utils import compute_camera_extrinsic_matrix, compute_camera_intrinsic_matrix
 from filelock import FileLock
 from utils.mujoco_utils import get_canonical_pose, set_xml_light_params, find_non_collision_pose, save_robot_metadata
-
+os.environ["PYOPENGL_PLATFORM"] = "osmesa"
 os.environ['MUJOCO_GL'] = 'osmesa'
 
 """
