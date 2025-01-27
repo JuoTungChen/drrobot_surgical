@@ -71,6 +71,7 @@ class RobotScene:
 
         assert load_iteration or opt_params.dataset_path, "Either load_iteration or dataset_path must be provided"
 
+        print("self.model_path", self.model_path)
         if load_iteration:
             #if you're loading from a previous iteration, we assume that you're not continuing training and just loading the model
             self.loaded_iter = searchForMaxIteration(os.path.join(self.model_path, "point_cloud")) \
