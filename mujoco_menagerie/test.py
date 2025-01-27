@@ -1,10 +1,10 @@
-import mujoco_py
+import mujoco
 import os
 
 def render_scene(file_path, camera_position, joint_angles):
     # Load the model
-    model = mujoco_py.load_model_from_path(file_path)
-    sim = mujoco_py.MjSim(model)
+    model = mujoco.MjModel.from_xml_path(file_path)
+    sim = mujoco.MjSim(model)
 
     # Set camera position
     sim.data.cam.pos[0] = camera_position['x']
@@ -17,14 +17,14 @@ def render_scene(file_path, camera_position, joint_angles):
         sim.data.qpos[joint_id] = angle
 
     # Create a viewer and render the scene
-    viewer = mujoco_py.MjViewer(sim)
+    viewer = mujoco.MjViewer(sim)
     while True:
         sim.step()
         viewer.render()
 
 if __name__ == "__main__":
     # Path to the XML file containing the model
-    file_path = 'path_to_your_panda_scene.xml'
+    file_path = './franka_emika_panda/panda.xml'
     
     # Camera position (example)
     camera_position = {'x': 2.0, 'y': 2.0, 'z': 2.0}
