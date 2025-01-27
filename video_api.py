@@ -11,7 +11,7 @@ from scene.cameras import Camera
 from scene.gaussian_model import GaussianModel
 from gaussian_renderer import render
 
-def initialize_gaussians(model_path=None, from_ckpt=False):
+def initialize_gaussians(model_path=None, from_ckpt=False, bg_color=[1, 1, 1]):
     parser = ArgumentParser(description="Testing script parameters")
     model = ModelParams(parser, sentinel=True)
     pipeline = PipelineParams(parser)
@@ -28,32 +28,35 @@ def initialize_gaussians(model_path=None, from_ckpt=False):
 
     gaussians.model_path = scene.model_path #todo, find a cleaner way to do this
 
-    bg_color = [1, 1, 1]
+    # bg_color = [1, 1, 1]
     background_color = torch.tensor(bg_color, dtype=torch.float32, device="cuda")
     return gaussians, background_color, scene.getSampleCameras(stage='pose_conditioned'), gaussians.chain
 
 
 if __name__ == "__main__":
     import moviepy as mpy
-    from moviepy.editor import ImageSequenceClip
+    from moviepy import ImageSequenceClip
     import copy
     import numpy as np
     from PIL import Image
 
     #trajectory values are between [-1, 1] and they represent [-pi, pi] joint angles
-    joint_trajectory_begin = torch.tensor([-0.0, -0.0, -0.0, 0.0, 0.0, 0.0])
-    joint_trajectory_end = torch.tensor([0.0, 1.0, 1.0, 1.0, 0.0, 0.0])
+    joint_trajectory_begin = torch.tensor([0.0, 0.125, 0.222, -0.203, 0.257])
+    joint_trajectory_end = torch.tensor([-0.663, -0.428, 0.444, -0.973, 0.385])
 
     #interpolate t=20
-    T = 20
+    T = 30
     joint_trajectory = torch.stack([joint_trajectory_begin + (joint_trajectory_end - joint_trajectory_begin) * t / T for t in range(T)])
 
-    gaussians, background_color, sample_cameras, kinematic_chain = initialize_gaussians()
+    gaussians, background_color, sample_cameras, kinematic_chain = initialize_gaussians(model_path="./output/p_short_exp_2")
 
-    for i, camera in enumerate(sample_cameras):
-        my_camera = camera
-        break
-
+    # for i, camera in enumerate(sample_cameras):
+    #     my_camera = camera
+    #     break
+    my_camera = sample_cameras[0]
+    my_camera.image_height = 480
+    my_camera.image_width = 480
+    print(my_camera.R, my_camera.T)
     video = []
     for i in range(len(joint_trajectory)):
         my_camera.joint_pose = joint_trajectory[i]
@@ -70,5 +73,8 @@ if __name__ == "__main__":
     video = (video * 255).astype(np.uint8)
 
     clip = ImageSequenceClip(list(video), fps=10)
-    clip.write_videofile("out_video.mp4")
+    clip.write_videofile("result_video_1.mp4")
+
+    ## also save the video as a gif
+    clip.write_gif("result_video_1.gif")
 
