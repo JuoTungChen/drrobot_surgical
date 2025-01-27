@@ -1,4 +1,9 @@
 data
 output
 __pycache__
+.gradio
 *.pyc
+*.mp4
+*.gif
+*.png
+*.TXT
