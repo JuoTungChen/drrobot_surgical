@@ -157,8 +157,8 @@ def visualize_dataset_point_clouds(path):
     
     # Find all sample directories
     # sample_dirs = [d for d in glob.glob(os.path.join(path, 'test_sample_*')) if os.path.isdir(d)]
-    # sample_dirs = [d for d in glob.glob(os.path.join(path, 'canonical_sample_*')) if os.path.isdir(d)]
-    sample_dirs = [d for d in glob.glob(os.path.join(path, 'sample_*')) if os.path.isdir(d)]
+    sample_dirs = [d for d in glob.glob(os.path.join(path, 'canonical_sample_*')) if os.path.isdir(d)]
+    # sample_dirs = [d for d in glob.glob(os.path.join(path, 'sample_*')) if os.path.isdir(d)]
     
     # Visualize first few samples
     for sample_path in sample_dirs[:5]:  # Limit to first 5 samples
@@ -173,6 +173,32 @@ def visualize_dataset_point_clouds(path):
         
         # Analyze
         analyze_point_cloud(pcd)
+
+def visualize_multiview_point_clouds(path):
+    """
+    Visualize point clouds from multiple samples in the dataset
+    
+    Parameters:
+    -----------
+    path : str
+        Path to the dataset
+    """
+    import glob
+    import os
+
+    sample_path = path
+
+    # Read point cloud
+    pcd_path = os.path.join(sample_path, 'points3D_multipleview.ply')
+    pcd = o3d.io.read_point_cloud(pcd_path)
+    
+    print(f"\nVisualizing point cloud from: {sample_path}")
+    
+    # Visualize
+    visualize_point_cloud(pcd, title=f'Point Cloud - {os.path.basename(sample_path)}')
+    
+    # Analyze
+    analyze_point_cloud(pcd)
 
 def visualize_result_point_clouds(path):
     """
@@ -208,6 +234,7 @@ def visualize_result_point_clouds(path):
 
 
 # Call this in your script
-visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/prograsp_dataset_no_random_base_1')
-# visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/davinci_prograsp')
-# visualize_result_point_clouds('/home/iulian/chole_ws/src/drrobot/output/prograsp_test_no_rand_1/point_cloud/pose_conditioned_iteration_4000')
+visualize_result_point_clouds('/home/iulian/chole_ws/src/drrobot/output/p_short_exp_2/point_cloud/pose_conditioned_iteration_48000')
+# visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/prograsp_dataset_center_close_test')
+# visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/franka_emika_panda')
+# visualize_result_point_clouds('/home/iulian/chole_ws/src/drrobot/output/franka_test/point_cloud/pose_conditioned_iteration_8000')
