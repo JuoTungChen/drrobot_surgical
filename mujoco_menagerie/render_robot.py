@@ -146,7 +146,23 @@ def random_base_placement(model, data):
 
     return model, data
 
-def change_viewpoint(viewer):
+def look_at_end_effector(model, data):
+
+    # Compute position adjustment to keep end-effector in frame
+    site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_site")
+    
+    # Initial simulation step to update kinematics
+    mujoco.mj_forward(model, data)
+    
+    # Get initial end-effector position
+    initial_site_pos = data.site_xpos[site_id]
+    
+    # Adjust base position to center end-effector
+    # model.body('pitch_link').pos[:] = -initial_site_pos
+
+    return initial_site_pos
+
+def change_viewpoint(viewer, lookat=[0.0, 0.0, 0.0], distance=0.5, elevation=0.0, azimuth=0.0):
     azimuth_offset = np.random.uniform(-180, 180)
     elevation_offset = np.random.uniform(-60, 20)
     radius_offset = np.random.uniform(0.5, 1.5) * 0.15
@@ -156,7 +172,7 @@ def change_viewpoint(viewer):
     print("elevation: ", elevation_offset)
     print("radius: ", radius_offset)
 
-    viewer.cam.lookat[:] = [0.0, 0.0, 0.0]       # Point the camera at (x, y, z)
+    viewer.cam.lookat[:] = lookat      # Point the camera at (x, y, z)
     viewer.cam.distance = radius_offset                 # Set distance from the target
     viewer.cam.elevation = elevation_offset      # Set camera elevation angle
     viewer.cam.azimuth = azimuth_offset                 # Set camera azimuth angle
@@ -170,51 +186,21 @@ def main():
         model = mujoco.MjModel.from_xml_path(xml_file_path)
         data = mujoco.MjData(model)
         
+        end_effector_pose= look_at_end_effector(model, data)
 
-        # Disable contact forces by turning off the contact flag
-        ## turn rotation to quaternion and set it
-        # rotate = np.array([1, 0.0, 0.0])
-        # # rotate = rotate / np.linalg.norm(rotate)
-        # # angle = np.linalg.norm(rotate)
-        # angle = np.radians(60)
-        # c = np.cos(angle / 2)
-        # s = np.sin(angle / 2)
-        # shaft_length = 0.5
-        # model.body('baselink').pos[0] = 0.0
-        # model.body('baselink').pos[1] = -np.sin(angle) * shaft_length
-        # model.body('baselink').pos[2] = np.cos(angle) * shaft_length
-
-
-        # model.body('baselink').quat[0] = c
-        # model.body('baselink').quat[1] = s * rotate[0]
-        # model.body('baselink').quat[2] = s * rotate[1]
-        # model.body('baselink').quat[3] = s * rotate[2]
-        model, data = random_base_placement(model, data)
-
-
-        # model.body('baselink').quat[0] = 1.0
-        # model.body('baselink').quat[1] = 0.0
-        # model.body('baselink').quat[2] = 0.0
-        # model.body('baselink').quat[3] = 0.0
-        # Set initial joint angles (adjust the indices and values as needed)
         # Example: Set the roll, pitch, right_jaw, and left_jaw joints to specific angles
-        print("object_pose", model.body('baselink').pos, model.body('baselink').quat)
-        roll_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "roll")
-        pitch_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pitch")
-        right_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_jaw")
-        left_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_jaw")
-        passive_1_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_1")
-        passive_2_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_2")
+        # print("object_pose", model.body('baselink').pos, model.body('baselink').quat)
+        # # roll_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "roll")
+        # pitch_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pitch")
+        # right_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_jaw")
+        # left_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_jaw")
+        # passive_1_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_1")
+        # passive_2_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_2")
 
-        # Set desired initial joint positions
-        # data.qpos[right_jaw_joint_id] = -0.6
-        # data.qpos[left_jaw_joint_id] = 0.37
-        # data.qpos[passive_1_joint_id] = -0.55
-        # data.qpos[passive_2_joint_id] = -0.55
-        # mujoco.set_mjcb_control(control_joints)
-        # mujoco.set_mjcb_control(control_callback)
+
         pitch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch")
-
+        control_limits = model.actuator_ctrlrange
+        print("control limits", control_limits)
         # Create a viewer and render the simulation
         with mujoco.viewer.launch_passive(model, data) as viewer:
             # for _ in range(10000):
@@ -222,55 +208,45 @@ def main():
 
 
             count = 0
+            viewer = change_viewpoint(viewer, lookat=end_effector_pose)
 
             while viewer.is_running():
                 # target_angles["right_jaw"] = np.sin(time.time())
                 # data.ctrl[right_jaw_joint_id] = 50 * (target_angles["right_jaw"] - data.qpos[right_jaw_joint_id])
-                if count % 1000000 == 0:
+                # if count % 1000000 == 0:
 
-                    # model, data = random_base_placement(model, data)
-                    viewer = change_viewpoint(viewer)
+                #     # model, data = random_base_placement(model, data)
+                #     viewer = change_viewpoint(viewer)
 
                 # data.ctrl[pitch_id] = 0.5
                 mujoco.mj_step(model, data)
                 viewer.sync()  # Synchronize the viewer with the simulation steps
 
                 # Get end-effector site ID
-                site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_site")
+                # site_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_site")
                 
-                # Get site position and orientation in world frame
-                site_pos = data.site_xpos[site_id]
-                site_mat = data.site_xmat[site_id].reshape(3,3)
+                # # Get site position and orientation in world frame
+                # site_pos = data.site_xpos[site_id]
+                # site_mat = data.site_xmat[site_id].reshape(3,3)
 
-                # Get camera rotation and position
-                extrinsic = compute_camera_extrinsic_matrix(viewer.cam)
-                # print("extrinsic: ", extrinsic)
-                camera_rot = extrinsic[:3, :3] 
-                camera_pos = extrinsic[:3, 3]
-                # Transform site position to camera frame
-                # 1. Translate to camera origin
-                translated_pos = site_pos - camera_pos
+                # # Get camera rotation and position
+                # extrinsic = compute_camera_extrinsic_matrix(viewer.cam)
+                # # print("extrinsic: ", extrinsic)
+                # camera_rot = extrinsic[:3, :3] 
+                # camera_pos = extrinsic[:3, 3]
+                # # Transform site position to camera frame
+                # # 1. Translate to camera origin
+                # translated_pos = site_pos - camera_pos
 
-                # 2. Rotate to camera coordinate system
-                camera_relative_pos = camera_rot.T @ translated_pos
+                # # 2. Rotate to camera coordinate system
+                # camera_relative_pos = camera_rot.T @ translated_pos
 
-                # Transform rotation matrix to camera frame
-                camera_relative_rot = camera_rot.T @ site_mat
-                count += 1
+                # # Transform rotation matrix to camera frame
+                # camera_relative_rot = camera_rot.T @ site_mat
+                # count += 1
                 mujoco.mj_collision(model, data)
-                print(data.qpos[pitch_joint_id])
-                # print(data.ncon)
-                # print(data.qpos)
-                
-                # input("Press Enter to continue...")
-                # print("End-effector position (camera frame):", camera_relative_pos)
-                # print("End-effector rotation matrix (camera frame):\n", camera_relative_rot)
-
-                # if abs(data.qpos[right_jaw_joint_id] - target_angles["right_jaw"]) < 0.01:
-                #     i +=1
-                    # print(abs(data.qpos[right_jaw_joint_id] - target_angles["right_jaw"]), i)
-                    # time.sleep(1)
-                    # input("Press Enter to continue...")  # Pause the simulation until Enter is pressed
+                print(data.ncon)
+                # print(data.qpos[pitch_joint_id])
 
     except Exception as e:
         print(f"Failed to load or render the model: {e}")
