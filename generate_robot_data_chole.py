@@ -35,7 +35,7 @@ class MujocoActor:
                  diffuse_light_params=(0.5, 0.5, 0.5),
                  ambient_light_params=(0.5, 0.5, 0.5),
                  resolution=(256, 256),
-                 pcd_max_points=10_000,
+                 pcd_max_points=20_000,
                  ):
         self.model_xml_dir = model_xml_dir
         self.model_xml_path = os.path.join(model_xml_dir, "scene.xml")
@@ -52,7 +52,8 @@ class MujocoActor:
                 self.model = mujoco.MjModel.from_xml_path(self.model_xml_path)
                 self.data = mujoco.MjData(self.model)
                 self.save_dir = save_dir
-                self.random_base_placement()
+                # self.random_base_placement()
+                # self.look_at_end_effector()
                 self.renderer = mujoco.Renderer(self.model, resolution[0], resolution[1])
                 success = True
             except Exception as e:
@@ -160,7 +161,7 @@ class MujocoActor:
         depth_images = []
         intrinsic_matrices = []
         extrinsic_matrices = []
-
+        lookat = self.look_at_end_effector()
         for j in range(num_camera_params):
             # self.random_base_placement()
             cam = mujoco.MjvCamera()
@@ -192,13 +193,13 @@ class MujocoActor:
     
     def generate_camera_params(self): #this can be implemented in other ways
 
-        azimuth_range = np.linspace(-180, 180, 3)
-        elevations = [-40, 0]
+        azimuth_range = np.linspace(-180, 180, 4)
+        elevations = [-45, 45]
         radii = np.array([1.0, 2.0]) * args.camera_distance_factor
         camera_params = np.zeros((len(azimuth_range) * len(elevations) * len(radii), 3))
 
         azimuth_offset = np.random.uniform(-180, 180)
-        elevation_offset = np.random.uniform(-20, 20)
+        elevation_offset = np.random.uniform(-25, 25)
         radius_offset = np.random.uniform(-0.5, 0.5) * args.camera_distance_factor
 
         for i, (azimuth, elevation, radius) in enumerate(itertools.product(azimuth_range, elevations, radii)):
@@ -210,6 +211,22 @@ class MujocoActor:
 
         return camera_params
     
+    def look_at_end_effector(self):
+
+        # Compute position adjustment to keep end-effector in frame
+        site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_site")
+        
+        # Initial simulation step to update kinematics
+        mujoco.mj_forward(self.model, self.data)
+        
+        # Get initial end-effector position
+        initial_site_pos = self.data.site_xpos[site_id]
+        
+        # Adjust base position to center end-effector
+        # self.model.body('pitch_link').pos[:] = -initial_site_pos
+
+        return initial_site_pos
+
     def random_base_placement(self, offset=0.02):
         # Random rotation angles
         # angle_x = np.random.uniform(-np.pi/4, np.pi/4)  # x-axis rotation
