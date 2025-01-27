@@ -82,13 +82,13 @@ def find_non_collision_pose(joint_limits,
     """
 
     find_pose_iters = 0
-    n_collisions_allowed = 0 #gets relaxed over time if a good pose cannot be found quickly
-    MAX_N_COLLISIONS = 2 if is_canonical else 10
+    n_collisions_allowed = 6 #gets relaxed over time if a good pose cannot be found quickly
+    MAX_N_COLLISIONS = 8 if is_canonical else 10
     while True:
         if is_canonical:
             joint_position = get_canonical_pose(joint_limits, robot_name=robot_name)
         else:
-            joint_position = np.random.uniform(joint_limits[:, 0], joint_limits[:, 1])
+            joint_position = np.random.uniform(joint_limits[:, 0], joint_limits[:, 1])  
     
         mujoco.mj_resetData(model, data)
         data.qpos[:] = joint_position
@@ -105,6 +105,91 @@ def find_non_collision_pose(joint_limits,
             print(f"[{robot_name}] Failed to generate non-collision sample")
             raise Exception(f"[{robot_name}] Failed to generate non-collision sample")
     return joint_position
+
+class ControlRobot:
+    def __init__(self, model, data):
+
+        self.model = model
+        self.data = data
+        # self.roll_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "roll")
+        self.pitch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch")
+        self.yaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "yaw")
+        self.jaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "jaw")
+        # self.roll_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "roll")
+        self.pitch_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pitch")
+        self.right_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_jaw")
+        self.left_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_jaw")
+        self.passive_1_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_1")
+        self.passive_2_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_2")
+
+    def control_to_non_collision_pose(self,
+                                      control_limits, 
+                                      joint_limits,
+                                      is_canonical, 
+                                      max_n_collisions=15,
+                                      max_iter=100,
+                                      robot_name='[Robot]'):
+        """
+        Robot poses that lead to collisions is suboptimal training data for the 3D Gaussians. 
+        Unfortunately, not every sampled pose is collision free. This function tries to find a pose without collision.
+        If it can't find no-collision pose fast, it starts looking for poses with 1 collision, then 2 collisions, etc.
+
+        Input:
+        - joint_limits: np.ndarray, shape [N, 2], where N is the number of joints
+        - model: mujoco.MjModel, the model of the robot
+        - data: mujoco.MjData, the data of the robot
+        - is_canonical: bool, if the robot is in its canonical pose
+        - max_n_collisions: int, the maximum number of collisions to allow
+        - robot_name: str, the name of the robot
+
+        Output:
+        - joint_position: np.ndarray, shape [N], the joint position of the robot
+        """
+
+        find_pose_iters = 0
+        n_collisions_allowed = 9 #gets relaxed over time if a good pose cannot be found quickly
+        MAX_N_COLLISIONS = 10 if is_canonical else max_n_collisions
+        while True:
+            if is_canonical:
+                joint_position = get_canonical_pose(joint_limits, robot_name=robot_name)
+                mujoco.mj_resetData(self.model, self.data)
+                self.data.qpos[:] = joint_position
+                mujoco.mj_step(self.model, self.data)
+
+            else:
+                self.target_angles = np.random.uniform(control_limits[:, 0], control_limits[:, 1])  
+                mujoco.mj_resetData(self.model, self.data)
+                for iter in range(max_iter):
+                    self.control_joints()
+                    mujoco.mj_step(self.model, self.data)
+                joint_position = self.data.qpos[[self.pitch_joint_id, self.right_jaw_joint_id, self.left_jaw_joint_id, self.passive_1_joint_id, self.passive_2_joint_id]]
+                
+                ## make sure the joint position is within the joint limits
+                for i, joint_pos in enumerate(joint_position):
+                    if joint_pos < joint_limits[i, 0]:
+                        joint_position[i] = joint_limits[i, 0]
+                    elif joint_pos > joint_limits[i, 1]:
+                        joint_position[i] = joint_limits[i, 1]
+            assert(len(joint_position) == len(joint_limits))
+            mujoco.mj_collision(self.model, self.data)
+            # print(f"ncon: {self.data.ncon}")
+            if (self.data.ncon <= n_collisions_allowed):
+                break
+            find_pose_iters += 1
+            if find_pose_iters > 50 * n_collisions_allowed: #more iterations as well
+                n_collisions_allowed += 1
+
+            if n_collisions_allowed > MAX_N_COLLISIONS:
+                print(f"[{robot_name}] Failed to generate non-collision sample")
+                raise Exception(f"[{robot_name}] Failed to generate non-collision sample")
+        return joint_position
+
+    def control_joints(self):
+        # self.data.ctrl[self.roll_id] = self.target_angles[0]
+        self.data.ctrl[self.pitch_id] = self.target_angles[0]
+        self.data.ctrl[self.yaw_id] = self.target_angles[1]
+        self.data.ctrl[self.jaw_id] = self.target_angles[2]
+        
 
 def compute_camera_extrinsic_matrix(cam):
     """Returns the 4x4 extrinsic matrix considering lookat, distance, azimuth, and elevation."""
