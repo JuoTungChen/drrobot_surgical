@@ -1,4 +1,3 @@
-<div align="center">
 
 # Differentiable Rendering for Surgical Tool Kinematics Estimation
 ### IROS 2025
