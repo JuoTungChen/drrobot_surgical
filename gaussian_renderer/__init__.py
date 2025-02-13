@@ -64,6 +64,7 @@ def render(viewpoint_camera,
 
    
     joints = viewpoint_camera.joint_pose.to(means3D.device).repeat(means3D.shape[0],1)
+    # print(joints[0][None])
     if stage == 'pose_conditioned':
         if pc.args.k_plane: # using k-plane deformation model for deformation instead of linear blend skinning
             means3D, scales, rotations, opacity, shs = pc._deformation(means3D, scales, rotations, opacity, shs, times_sel=None, joints=joints)
@@ -86,6 +87,12 @@ def render(viewpoint_camera,
             scales = scales_out[0]
             opacity = opacity_out[0]
             shs = shs_out[0]
+
+    # robot_pose_transform = compute_robot_pose_transform(joints[0][None])  # Shape: [4, 4] (Homogeneous matrix)    # Apply robot pose transform to the Gaussian means (point positions)
+    # means3D_homogeneous = torch.cat([means3D, torch.ones_like(means3D[:, :1])], dim=1)  # Homogeneous coordinates
+    # means3D_transformed = (robot_pose_transform @ means3D_homogeneous.T).T[:, :3]
+
+
 
     # Rasterize visible Gaussians to image, obtain their radii (on screen). 
     # breakpoint()
@@ -128,5 +135,6 @@ def render(viewpoint_camera,
         "viewspace_points": info["means2d"],
         "visibility_filter": radii > 0,
         "radii": radii,
-        "silhouette": silhouette
+        "silhouette": silhouette,
+        "pc": means3D,
     }
