@@ -8,7 +8,7 @@ import glob
 import mujoco
 import shutil
 from PIL import Image
-from utils.mujoco_utils import compute_camera_extrinsic_matrix, compute_camera_intrinsic_matrix
+from utils.mujoco_utils import compute_camera_extrinsic_matrix, compute_camera_intrinsic_matrix, extract_camera_parameters
 from filelock import FileLock
 from utils.mujoco_utils import get_canonical_pose, set_xml_light_params, find_non_collision_pose, save_robot_metadata, ControlRobot
 os.environ["PYOPENGL_PLATFORM"] = "osmesa"
@@ -66,7 +66,7 @@ class MujocoActor:
 
         self.pcd_max_points = pcd_max_points
         save_robot_metadata(self.model, self.model_xml_dir, self.save_dir)
-        self.control_robot = ControlRobot(self.model, self.data)
+        self.control_robot = ControlRobot(self.model, self.data, self.robot_name)
 
 
     def generate_and_save_pc(self, sample_id, args, is_canonical=False, is_test=False, verbose=False):
@@ -161,7 +161,7 @@ class MujocoActor:
         depth_images = []
         intrinsic_matrices = []
         extrinsic_matrices = []
-        lookat = self.look_at_end_effector()
+        # lookat = self.look_at_end_effector()
         for j in range(num_camera_params):
             # self.random_base_placement()
             cam = mujoco.MjvCamera()
@@ -206,8 +206,6 @@ class MujocoActor:
             azimuth += azimuth_offset
             elevation += elevation_offset
             radius += radius_offset
-            
-            camera_params[i] = [radius, azimuth, elevation]
 
         return camera_params
     
@@ -232,7 +230,7 @@ class MujocoActor:
         # angle_x = np.random.uniform(-np.pi/4, np.pi/4)  # x-axis rotation
         # angle_y = np.random.uniform(-np.pi/4, np.pi/4)  # y-axis rotation
         # angle_z = np.random.uniform(-np.pi/4, np.pi/4)  # z-axis rotation
-        angle_x = 0  # x-axis rotation
+        angle_x = 30  # x-axis rotation
         angle_y = 0  # y-axis rotation
         angle_z = 0  # z-axis rotation
         # print("angle_x: ", angle_x)
@@ -266,7 +264,12 @@ class MujocoActor:
         final_quat = quat_mul(quat_mul(quat_x, quat_y), quat_z)
 
         # Set base link orientation and position
-        self.model.body('baselink').quat[:] = final_quat
+
+        # self.model.body('pitch_link').quat[:] = final_quat
+        print( self.model.body('pitch_link').quat[:], quat_mul(self.model.body('pitch_link').quat[:], quat_x))
+
+        ## apply rotation around x axis to the pitch_link
+        self.model.body('pitch_link').quat[:] = quat_mul(self.model.body('pitch_link').quat[:], quat_x)
         
         # Compute position adjustment to keep end-effector in frame
         site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, "end_effector_site")
@@ -276,9 +279,11 @@ class MujocoActor:
         
         # Get initial end-effector position
         initial_site_pos = self.data.site_xpos[site_id]
-        
+        initial_site_rot = self.data.site_xmat[site_id]
+        print("initial_site_pos: ", initial_site_pos)
+        print("initial_site_rot: ", initial_site_rot)
         # Adjust base position to center end-effector
-        self.model.body('baselink').pos[:] = -initial_site_pos
+        # self.model.body('baselink').pos[:] = -initial_site_pos
 
         # ## add a noise in the base position
         # self.model.body('baselink').pos[0] += np.random.uniform(-offset, offset)
@@ -310,7 +315,7 @@ def generate_data(num_actors, num_samples, model_xml_dir, save_dir, args, is_can
         if num_files >= num_samples:
             break
 
-        time.sleep(1)
+        time.sleep(0.5)
 
         elapsed_time = time.time() - start_time
         rate = num_files / elapsed_time
