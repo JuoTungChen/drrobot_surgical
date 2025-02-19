@@ -32,7 +32,7 @@ To make the URDF controllable in MuJoCo, you can follow the steps outlined below
 7. Modify the .XML file:
   * rename the model and add meshdir="assets" to the ```<compiler>``` tag
   * add ```<equality>``` if you want to couple left and right jaw motion
-  * add ```<actuator>``` and use ```<position>``` for position control and tune the parameters like "forcerange", "ctrlrange", "kp", "gear", "dampratio"
+  * add ```<actuator>``` and use ```<position>``` for position control and tune parameters like "forcerange", "ctrlrange", "kp", "gear", "dampratio"
 
 
 ## Pipeline
@@ -40,6 +40,7 @@ The kinematics estimation process involves the following steps:
 
 1. Data Generation:
   Prepare training data by simulating or capturing images of the surgical tool in various configurations to train the differentiable tool model.
+  Generating 10000 samples takes around 15 mins.
 
 2. Learning a Differentiable Surgical Tool Model:
   Train a differentiable model of the surgical tool using a 3-stage training paradigm:
@@ -49,6 +50,7 @@ The kinematics estimation process involves the following steps:
      <li>Deformation field training</li>
      <li>Joint training</li>
    </ol>
+   Training should take around 20 min on a RTX 4090.
 
 3. Tool Segmentation and Tracking:
     Use SAM-2 (Segment Anything Model v2) to accurately segment and track surgical tools in the video frames.
