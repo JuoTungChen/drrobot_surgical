@@ -107,20 +107,32 @@ def find_non_collision_pose(joint_limits,
     return joint_position
 
 class ControlRobot:
-    def __init__(self, model, data):
+    def __init__(self, model, data, robot_name):
 
         self.model = model
         self.data = data
+        self.robot_name = robot_name
         # self.roll_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "roll")
-        self.pitch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch")
-        self.yaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "yaw")
-        self.jaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "jaw")
-        # self.roll_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "roll")
-        self.pitch_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pitch")
-        self.right_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_jaw")
-        self.left_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_jaw")
-        self.passive_1_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_1")
-        self.passive_2_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_2")
+
+        if robot_name == "prograsp": 
+            self.pitch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch")
+            self.yaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "yaw")
+            self.jaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "jaw")
+            # self.roll_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "roll")
+            self.pitch_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pitch")
+            self.right_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_jaw")
+            self.left_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_jaw")
+            self.passive_1_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_1")
+            self.passive_2_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "passive_2")
+        elif robot_name == "lnd":
+            self.pitch_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "pitch")
+            self.yaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "right_jaw")
+            self.jaw_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_ACTUATOR, "left_jaw")
+            self.pitch_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "pitch")
+            self.right_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "right_jaw")
+            self.left_jaw_joint_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, "left_jaw")
+        else:
+            raise ValueError(f"Robot {robot_name} not supported")
 
     def control_to_non_collision_pose(self,
                                       control_limits, 
@@ -147,8 +159,14 @@ class ControlRobot:
         """
 
         find_pose_iters = 0
-        n_collisions_allowed = 9 #gets relaxed over time if a good pose cannot be found quickly
-        MAX_N_COLLISIONS = 10 if is_canonical else max_n_collisions
+        if self.robot_name == "prograsp":
+            n_collisions_allowed = 9 #gets relaxed over time if a good pose cannot be found quickly
+            MAX_N_COLLISIONS = 10 if is_canonical else max_n_collisions
+
+        elif self.robot_name == "lnd":
+            n_collisions_allowed = 10
+            MAX_N_COLLISIONS = 8 if is_canonical else max_n_collisions
+        
         while True:
             if is_canonical:
                 joint_position = get_canonical_pose(joint_limits, robot_name=robot_name)
@@ -162,7 +180,10 @@ class ControlRobot:
                 for iter in range(max_iter):
                     self.control_joints()
                     mujoco.mj_step(self.model, self.data)
-                joint_position = self.data.qpos[[self.pitch_joint_id, self.right_jaw_joint_id, self.left_jaw_joint_id, self.passive_1_joint_id, self.passive_2_joint_id]]
+                if self.robot_name == "prograsp":
+                    joint_position = self.data.qpos[[self.pitch_joint_id, self.right_jaw_joint_id, self.left_jaw_joint_id, self.passive_1_joint_id, self.passive_2_joint_id]]
+                elif self.robot_name == "lnd":
+                    joint_position = self.data.qpos[[self.pitch_joint_id, self.right_jaw_joint_id, self.left_jaw_joint_id]]
                 
                 ## make sure the joint position is within the joint limits
                 for i, joint_pos in enumerate(joint_position):
@@ -253,15 +274,15 @@ def extract_camera_parameters(extrinsic_matrix, lookat=[0, 0, 0]):
     t = extrinsic_matrix[:3, 3]
     # Camera position in world coordinates
     C = -R.T @ t
-    print("new C: ", C)
-    print("new t: ", t)
+    # print("new C: ", C)
+    # print("new t: ", t)
 
     # Calculate lookat point (assuming it's the point the camera is facing)
     forward = R[2, :]  # The third row of R represents the forward direction
-    print("new forward: ", forward)
+    # print("new forward: ", forward)
     # Calculate distance
     distance = np.linalg.norm(C - lookat)
-    print("new distance: ", distance)
+    # print("new distance: ", distance)
 
     # Calculate azimuth and elevation
     delta = C - lookat
@@ -272,8 +293,8 @@ def extract_camera_parameters(extrinsic_matrix, lookat=[0, 0, 0]):
     azimuth_deg = np.degrees(azimuth)
     elevation_deg = np.degrees(elevation)
 
-    print("new azimuth: ", azimuth_deg)
-    print("new elevation: ", elevation_deg)
+    # print("new azimuth: ", azimuth_deg)
+    # print("new elevation: ", elevation_deg)
 
     return {
         'azimuth': azimuth_deg,

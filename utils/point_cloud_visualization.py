@@ -234,7 +234,7 @@ def visualize_result_point_clouds(path):
 
 
 # Call this in your script
-visualize_result_point_clouds('/home/iulian/chole_ws/src/drrobot/output/p_short_exp_2/point_cloud/pose_conditioned_iteration_48000')
-# visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/prograsp_dataset_center_close_test')
+# visualize_result_point_clouds('/home/iulian/chole_ws/src/drrobot/output/p_short_exp_2/point_cloud/pose_conditioned_iteration_48000')
+visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/LND_short')
 # visualize_dataset_point_clouds('/home/iulian/chole_ws/src/drrobot/data/franka_emika_panda')
 # visualize_result_point_clouds('/home/iulian/chole_ws/src/drrobot/output/franka_test/point_cloud/pose_conditioned_iteration_8000')

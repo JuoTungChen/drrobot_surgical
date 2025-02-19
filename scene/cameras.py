@@ -109,6 +109,15 @@ class Camera(nn.Module):
         self.robot_mask = self.depth < 10.0
 
 
+    def get_projection_matrix(self):
+        self.full_proj_transform = (self.world_view_transform.unsqueeze(0).bmm(self.projection_matrix.unsqueeze(0).to())).squeeze(0)
+        return self.full_proj_transform
+    
+    def get_camera_center(self):
+        self.camera_center = self.world_view_transform.inverse()[3, :3]
+        return self.camera_center
+
+
 class MiniCam:
     def __init__(self, width, height, fovy, fovx, znear, zfar, world_view_transform, full_proj_transform):
         self.image_width = width
