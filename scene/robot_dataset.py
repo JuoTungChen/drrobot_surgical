@@ -7,10 +7,130 @@ import glob
 import torch
 from tqdm import tqdm
 import time
-from scene.cameras import Camera
+from scene.cameras import Camera, PoseCamera
 import open3d as o3d
 import pickle
 import torchvision
+
+class RobotPoseDataset(Dataset):
+    def __init__(
+        self,
+        dataset_path=None,
+        stage='canonical',
+    ):
+        """
+        Args:
+            robot_dataset_params (RobotDatasetParams): optional parameters for the dataset
+            stage (str): 'coarse' (canonical gaussian training), 'fine' (pose-conditioned training)
+            blend_n_point_clouds (int): number of point clouds to blend for the initialization of the 3D gaussian
+            each point cloud comes from a sample in the data, and while all point clouds are expected to be of the same size, 
+            blending many of them initially helps to sample more uniformly.
+        """
+        super().__init__()
+        assert stage in ['canonical', 'pose_conditioned']
+        self.dataset_path = dataset_path
+
+        self.iters = 0
+
+        canonical_samples = glob.glob(os.path.join(self.dataset_path, "canonical_sample_*"))
+        samples = glob.glob(os.path.join(self.dataset_path, "sample_*"))
+
+        assert len(canonical_samples) > 0, f"No canonical samples found in {self.dataset_path}"
+        assert len(samples) > 0, f"No samples found in {self.dataset_path}"
+
+        if stage == 'canonical':
+            self.data_dirs = [d for d in glob.glob(os.path.join(self.dataset_path, "canonical_sample_*")) if os.path.isdir(d)]
+            # only use the first  canonical sample for now
+            # self.data_dirs = self.data_dirs[400:410] 
+            print(f"[RobotDataset] Using {len(self.data_dirs)} canonical samples")
+        else:
+            self.data_dirs = [d for d in glob.glob(os.path.join(self.dataset_path, "sample_*")) if os.path.isdir(d)]
+
+        assert len(self.data_dirs) > 0, f"No {'canonical ' if stage == 'canonical' else ''}sample directories found in {self.dataset_path}"
+
+    def normalize_joint_positions(self, joint_positions):
+
+        #normalize between [-1, 1]
+        tolerance = 1e-6
+        lower_limits = self.joint_limits[:, 0] - tolerance
+        upper_limits = self.joint_limits[:, 1] + tolerance
+        scale = 2 / (upper_limits - lower_limits)
+        normalized_joint_positions = (joint_positions - lower_limits) * scale - 1.
+        # print("normalized_joint_positions", normalized_joint_positions)
+
+        assert lower_limits.shape == joint_positions.shape, f"{lower_limits.shape} != {joint_positions.shape}"
+        assert joint_positions.shape == normalized_joint_positions.shape, f"{joint_positions.shape} != {normalized_joint_positions.shape}"
+
+        assert np.abs(normalized_joint_positions).max() <= 1.0 + 1e-6
+        assert len(normalized_joint_positions) == self.n_joints
+      
+        return normalized_joint_positions
+
+    def __len__(self):
+        return len(self.data_dirs)
+
+    def __getitem__(self, idx):
+
+        #seed a generator with index and load that image
+        generator = np.random.RandomState(self.iters)
+        idx = generator.choice(len(self.data_dirs))
+        self.iters += 1
+        data_dir = self.data_dirs[idx]
+        try:
+            images = glob.glob(os.path.join(data_dir, "image_*.jpg"))
+            images = sorted(images, key=lambda x: int(x.split("_")[-1].split(".")[0]))
+            extrinsics_matrices = np.load(os.path.join(data_dir, "extrinsics.npy"))
+            object_poses = np.load(os.path.join(data_dir, "object_poses.npy"))
+            raw_joint_params = np.load(os.path.join(data_dir, "joint_positions.npy"))
+
+        except Exception as e:
+            print(f"Error {e} loading data, skipping...")
+            return self.__getitem__(idx + 1)
+        
+        img_idx = generator.choice(len(images))
+
+        image_path = os.path.join(data_dir, "image_{}.jpg".format(img_idx))
+        # depth_path = os.path.join(data_dir, "depth_{}.npy".format(img_idx)) 
+        
+        #load image as numpy array and put it between 0,1
+        try:
+            img = np.array(Image.open(image_path)).astype(np.float32) / 255.0
+            img = img.transpose(2, 0, 1)
+            # depth = np.load(depth_path)
+
+            extrinsic_matrix = extrinsics_matrices[img_idx]
+            obj_pose = object_poses[img_idx]
+            # joint_params = self.normalize_joint_positions(raw_joint_params)
+            # if joint_params is None:
+                # print("Joint params are None, skipping...")
+                # return self.__getitem__(idx + 1)
+
+        except Exception as e:
+            print(f"Error {e} loading data, skipping...")
+            return self.__getitem__(idx + 1)
+        
+        FovX, FovY = 0.78, 0.78 #default fov from mujoco, TODO: implement it in a more principled way
+
+        original_image = torch.from_numpy(img).clamp(0.0, 1.0)
+        obj_pose = torch.from_numpy(obj_pose).float()
+
+        return original_image, obj_pose
+            
+        # return PoseCamera(
+        #     colmap_id=None,
+        #     R=extrinsic_matrix[:3, :3].T,
+        #     T=extrinsic_matrix[:3, 3],
+        #     FoVx=FovX,
+        #     FoVy=FovY,
+        #     image=img,
+        #     gt_alpha_mask=None,
+        #     image_name=None,
+        #     uid=None,
+        #     joint_pose=joint_params,
+        # )
+
+ 
+
 
 class RobotDataset(Dataset):
     def __init__(
