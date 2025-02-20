@@ -10,6 +10,7 @@
 #
 
 import os
+# os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -37,12 +38,38 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 from lbs.nn import train_lrs
-
+from torchvision import transforms
+import random
 
 from torch.utils.data import DataLoader
+import gc
+gc.collect()
+torch.cuda.empty_cache()
+
+class DataAugmentation(Dataset):
+    def __init__(self, dataset):
+        self.dataset = dataset
+        self.augment = transforms.Compose([
+            transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+            transforms.GaussianBlur(kernel_size=3),
+            # transforms.RandomAffine(degrees=0, translate=(0.1, 0.1), scale=(0.9, 1.1)),  # Only small translation and scale
+            # transforms.ToTensor(),
+        ])
+    
+    def __len__(self):
+        return len(self.dataset)
+    
+    def __getitem__(self, idx):
+        image, pose = self.dataset[idx]
+
+        # Apply augmentation to the image
+        image = self.augment(image)
+
+        return image, pose
 
 
-# Pose estimation network using ResNet
+# ----------- Pose estimation network using ResNet ----------- #
+
 class PoseNet(nn.Module):
     def __init__(self):
         super(PoseNet, self).__init__()
@@ -53,58 +80,108 @@ class PoseNet(nn.Module):
     def forward(self, x):
         features = self.backbone(x)
         pose = self.fc(features)
-        pose_q = pose[:, 3:] / torch.norm(pose[:, 3:], dim=1, keepdim=True)
+        # pose_q = pose[:, 3:] / (torch.norm(pose[:, 3:], dim=1, keepdim=True) + 1e-8)
+        norm = torch.norm(pose[:, 3:], dim=1, keepdim=True)
+        pose_q = pose[:, 3:] / (norm + 1e-6)  # Increase the small value
+
         pose = torch.cat((pose[:, :3], pose_q), dim=1)
         return pose
+
+
+# ----------- Transformer-enhanced Pose Estimation Network ----------- #
+
+class PoseNetTransformer(nn.Module):
+    def __init__(self, hidden_dim=256, num_heads=4, num_layers=2):
+        super(PoseNetTransformer, self).__init__()
+        self.backbone = models.resnet18(pretrained=True)
+        self.backbone.fc = nn.Linear(512, hidden_dim)  # Project ResNet features
+        
+        self.transformer = nn.TransformerEncoder(
+            nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=num_heads, dim_feedforward=512),
+            num_layers=num_layers
+        )
+        
+        self.fc = nn.Linear(hidden_dim, 7)  # Predict x, y, z, qx, qy, qz, qw
     
+    def forward(self, x):
+        features = self.backbone(x)  # Extract features from ResNet
+        features = features.unsqueeze(1)  # Add sequence dimension (batch, seq_len=1, feature_dim)
+        transformed_features = self.transformer(features).squeeze(1)  # Pass through Transformer
+        pose = self.fc(transformed_features)  # Predict pose
+        
+        norm = torch.norm(pose[:, 3:], dim=1, keepdim=True)
+        pose_q = pose[:, 3:] / (norm + 1e-6)  # Normalize quaternion
+        pose = torch.cat((pose[:, :3], pose_q), dim=1)
+        return pose
+
+
 def geodesic_loss(q_pred, q_true):
-    loss = 1 - torch.abs(torch.sum(q_pred * q_true, dim=1))  # Quaternion similarity loss
+    dot_product = torch.sum(q_pred * q_true, dim=1)
+    dot_product = torch.clamp(dot_product, -1.0, 1.0)
+    loss = 1 - torch.abs(dot_product)  # Quaternion similarity loss
+    return loss.mean()
+
+def quaternion_loss(q_pred, q_true):
+    loss = torch.min(torch.norm(q_pred - q_true, dim=1), torch.norm(q_pred + q_true, dim=1))
     return loss.mean()
 
 # Training setup
-def train_pose_net(dataset, tb_writer, max_iter, test_every, checkpoint_every, checkpoint):
+def train_pose_net(dataset, tb_writer, max_iter, test_every, checkpoint_every, checkpoint, model_name="PoseNet"):
     first_iter = 0
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    iteration = 0
+    total_loss = 0.0
+    total_loss_t = 0.0
+    total_loss_r = 0.0
+    scale = 600
+
+    device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+
+    if model_name == "PoseNet":
+        model = PoseNet().to(device)
+    elif model_name == "PoseNetTransformer":
+        model = PoseNetTransformer().to(device)
+    else:
+        raise ValueError("Invalid model name")
+
+    if checkpoint:
+        (model_params, trained_iter) = torch.load(checkpoint)
+        model.load_state_dict(model_params)
+    else:
+        trained_iter = 0
+
+    model.train()
 
     iter_start = torch.cuda.Event(enable_timing = True)
     iter_end = torch.cuda.Event(enable_timing = True)
 
-    viewpoint_stack = None
     ema_loss_for_log = 0.0
     max_iterations = max_iter
     progress_bar = tqdm(range(first_iter, max_iterations), desc="Training progress")
     first_iter += 1
-    # for iteration in range(first_iter, opt.iterations + 1):   
 
     viewpoint_stack_pc = dataset.getTrainCameras(stage="pose_conditioned")
     viewpoint_stack_can = dataset.getTrainCameras(stage="canonical")
-    iteration = 0
-
-    model = PoseNet().to(device)
-    if checkpoint:
-        (model_params, trained_iter) = torch.load(checkpoint)
-        model.load_state_dict(model_params)
-    model.train()
+    viewpoint_stack_pc = DataAugmentation(viewpoint_stack_pc)
+    viewpoint_stack_can = DataAugmentation(viewpoint_stack_can)
+    dataloader_pc = DataLoader(viewpoint_stack_pc, batch_size=64, shuffle=True)
+    dataloader_can = DataLoader(viewpoint_stack_can, batch_size=64, shuffle=True)
 
 
-    dataloader_pc = DataLoader(viewpoint_stack_pc, batch_size=32, shuffle=True)
-    dataset_can = DataLoader(viewpoint_stack_can, batch_size=32, shuffle=True)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    total_loss = 0.0
 
-    for epoch in range(max_iterations):
-
-        iteration += 1
-        iter_start.record()
-
-
-        dataloader = dataloader_pc if iteration % 2 == 0 else dataset_can
+    for epoch in range(max_iterations // len(dataloader_pc)):
+        
+        dataloader = dataloader_can if epoch % 4 == 0 else dataloader_pc
         for images, poses in dataloader:
+
+            iteration += 1
+            iter_start.record()
+
             ## process pose data (homogeneous to translation and quaternion)
             translations = poses[:, :3, 3]
             rotations = poses[:, :3, :3]
             ## convert rotation matrix to quaternion
-            qw = 0.5 * torch.sqrt(1 + rotations[:, 0, 0] + rotations[:, 1, 1] + rotations[:, 2, 2])
+            qw = torch.sqrt(torch.clamp(1 + rotations[:, 0, 0] + rotations[:, 1, 1] + rotations[:, 2, 2], min=1e-6))
             qx = (rotations[:, 2, 1] - rotations[:, 1, 2]) / (4 * qw)
             qy = (rotations[:, 0, 2] - rotations[:, 2, 0]) / (4 * qw)
             qz = (rotations[:, 1, 0] - rotations[:, 0, 1]) / (4 * qw)
@@ -112,14 +189,19 @@ def train_pose_net(dataset, tb_writer, max_iter, test_every, checkpoint_every, c
             quats = torch.stack([qx, qy, qz, qw], dim=1).to(device)
             images, poses = images.to(device), poses.to(device)
             optimizer.zero_grad()
+            if torch.sum(images) < 20:
+                print("Skipping iteration due to empty images")
+                continue
             predictions = model(images)
             
             loss_t = nn.MSELoss()(predictions[:, :3], translations)  # Translation loss
+            # loss_r = quaternion_loss(predictions[:, 3:], quats)  # Rotation loss
             loss_r = geodesic_loss(predictions[:, 3:], quats)  # Rotation loss
-            loss = loss_t + loss_r
+            loss = scale * loss_t + loss_r
             
             loss.backward()
             iter_end.record()
+            torch.cuda.synchronize()
 
             with torch.no_grad():
                 # Progress bar
@@ -127,13 +209,21 @@ def train_pose_net(dataset, tb_writer, max_iter, test_every, checkpoint_every, c
                 if iteration % 10 == 0:
                     progress_bar.set_postfix({"Loss": f"{ema_loss_for_log:.{7}f}"})
                     progress_bar.update(10)
+                
                 if iteration == max_iterations:
                     progress_bar.close()
-                training_report_pose(tb_writer, iteration, loss, model, iter_start.elapsed_time(iter_end), dataset, test_every)
+                    
+                training_report_pose(tb_writer, iteration, loss, model, iter_start.elapsed_time(iter_end), dataset, test_every, device)
 
                 optimizer.step()
                 total_loss += loss.item()
-        
+                total_loss_t += loss_t.item()
+                total_loss_r += loss_r.item()
+                if iteration % 100 == 0:
+                    print(f"Epoch {epoch+1}, Iteration {iteration}, Loss: {total_loss/100:.4f}, Translation Loss: {scale* total_loss_t/100:.4f}, Rotation Loss: {total_loss_r/100:.4f}")
+                    total_loss = 0.0
+                    total_loss_t = 0.0
+                    total_loss_r = 0.0
                 # print(f"Epoch {epoch+1}, Loss: {total_loss/len(dataloader):.4f}")
                 if (iteration % checkpoint_every == 0):
                     print("\n[ITER {}] Saving Checkpoint".format(iteration))
@@ -141,14 +231,14 @@ def train_pose_net(dataset, tb_writer, max_iter, test_every, checkpoint_every, c
 
                     print(f"Model saved as pose_net_chkpnt_{trained_iter + iteration}.pth")
 
-def training_report_pose(tb_writer, iteration, loss, model, elapsed, dataset, test_every):
+def training_report_pose(tb_writer, iteration, loss, model, elapsed, dataset, test_every, device="cuda"):
     if tb_writer:
         tb_writer.add_scalar('train_loss_patches/total_loss', loss.item(), iteration)
         tb_writer.add_scalar('iter_time', elapsed, iteration)
 
     # Report test and samples of training set
     test_cameras = dataset.getSampleCameras(stage='pose_conditioned')
-    if iteration % args.test_every == 0:
+    if iteration % test_every == 0:
         torch.cuda.empty_cache()
         validation_configs = [{'name': 'test', 
                                'cameras': test_cameras}]
@@ -158,8 +248,8 @@ def training_report_pose(tb_writer, iteration, loss, model, elapsed, dataset, te
                 test_loss = 0.0
                 for idx, cam in enumerate(config['cameras']):
 
-                    gt_image = cam[0].to("cuda")
-                    pose = cam[1].to("cuda")
+                    gt_image = cam[0].to(device)
+                    pose = cam[1].to(device)
                     if tb_writer and (idx < 16):
                         predictions = model(gt_image.unsqueeze(0))  # Add batch dimension
                         # for i, value in enumerate(predictions.squeeze(0)):
@@ -398,13 +488,14 @@ if __name__ == "__main__":
     parser.add_argument('--port', type=int, default=randint(10000, 65535))
     parser.add_argument('--debug_from', type=int, default=-1)
     parser.add_argument('--detect_anomaly', action='store_true', default=True)
-    parser.add_argument("--test_every", type=int, default=100)
+    parser.add_argument("--test_every", type=int, default=500)
     parser.add_argument("--save_every", type=int, default=1000)
     parser.add_argument("--quiet", action="store_true")
     parser.add_argument("--checkpoint_every", type=int, default=1000)
     parser.add_argument("--max_iter", type=int, default=30000)
     parser.add_argument("--start_checkpoint", type=str, default = None)
     parser.add_argument("--experiment_name", type=str, default = None)
+    parser.add_argument("--model_name", type=str, default = "PoseNet")
     args = parser.parse_args(sys.argv[1:])
 
     if args.experiment_name is None:
@@ -423,7 +514,7 @@ if __name__ == "__main__":
     dataset = RobotPoseScene(dataset_config, gaussians, opt_params=opt)
     # Start GUI server, configure and run training
     torch.autograd.set_detect_anomaly(args.detect_anomaly)
-    train_pose_net(dataset, tb_writer, args.max_iter,  args.test_every, args.checkpoint_every, args.start_checkpoint)
+    train_pose_net(dataset, tb_writer, args.max_iter,  args.test_every, args.checkpoint_every, args.start_checkpoint, args.model_name)
     # three_stage_training(lp.extract(args), None, op.extract(args), pp.extract(args), args.test_every, args.save_every, args.checkpoint_every, args.start_checkpoint, args.debug_from, args.experiment_name)
 
     # All done
