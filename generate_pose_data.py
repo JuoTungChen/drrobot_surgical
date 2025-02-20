@@ -155,12 +155,16 @@ class MujocoActor:
         np.save(os.path.join(unique_dir, 'extrinsics.npy'), extrinsic_matrices)
         np.save(os.path.join(unique_dir, 'intrinsics.npy'), intrinsic_matrices)
         object_poses = []
+
         for i in range(len(extrinsic_matrices)):
             object_pose = np.eye(4)
             object_pose[:3, :3] = extrinsic_matrices[i][:3, :3] @ rand_rotations[i]
             object_pose[:3, 3] = extrinsic_matrices[i][:3, :3] @ rand_translations[i] + extrinsic_matrices[i][:3, 3]
             object_poses.append(object_pose)
+
         np.save(os.path.join(unique_dir, 'object_poses.npy'), object_poses)
+        np.save(os.path.join(unique_dir, 'rand_rotations.npy'), rand_rotations)
+        np.save(os.path.join(unique_dir, 'rand_translations.npy'), rand_translations)
 
     def render_images(self, joint_position, camera_params, render_depth=True, lookat=[0, 0, 0]):
         num_camera_params = camera_params.shape[0]
@@ -181,7 +185,7 @@ class MujocoActor:
             cam.lookat = np.array(lookat)
             # print(camera_params[j,:])
             
-            rand_rot, rand_tran = self.random_pose()
+            rand_rot, rand_tran, init_pos, init_quat = self.random_pose()
             
             self.data.qpos[:] = joint_position
 
@@ -198,7 +202,7 @@ class MujocoActor:
             else:
                 depth = None
             ## if robot is not in the scene, skip this camera pose
-            if np.sum(pixels) == 0:
+            if np.sum(pixels) < 30:
                 # j -= 1
                 # print("robot not in scene")
                 continue
@@ -208,6 +212,13 @@ class MujocoActor:
             extrinsic_matrices.append(compute_camera_extrinsic_matrix(cam))
             rand_rotations.append(rand_rot)
             rand_translations.append(rand_tran)
+
+            ## reset the robot to the initial position
+            self.model.body('baselink').pos[:] = init_pos
+            self.model.body('baselink').quat[:] = init_quat
+
+            mujoco.mj_step(self.model, self.data)
+
 
         return images, depth_images, intrinsic_matrices, extrinsic_matrices, rand_rotations, rand_translations
     
@@ -242,8 +253,8 @@ class MujocoActor:
         T_we[:3,:3] = site_mat
         T_we[:3, 3] = site_pos
 
-        init_body_pos = self.model.body('baselink').pos[:]
-        init_body_quat = self.model.body('baselink').quat[:]
+        init_body_pos = self.model.body('baselink').pos[:].copy()
+        init_body_quat = self.model.body('baselink').quat[:].copy()
 
         # Apply random rotation around x, y, z to the baseline
         theta_x = np.random.uniform(-np.pi/4, np.pi/4)
@@ -282,7 +293,7 @@ class MujocoActor:
         rand_translation = np.random.uniform(-0.003, 0.003, 3)
         self.model.body('baselink').pos[:] = init_body_pos + rand_translation
 
-        return rand_rotation, rand_translation
+        return rand_rotation, rand_translation, init_body_pos, init_body_quat
 
 def generate_data(num_actors, num_samples, model_xml_dir, save_dir, args, is_canonical=False, is_test=False, verbose=False):
 
