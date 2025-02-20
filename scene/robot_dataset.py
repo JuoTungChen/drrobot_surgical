@@ -82,11 +82,15 @@ class RobotPoseDataset(Dataset):
             extrinsics_matrices = np.load(os.path.join(data_dir, "extrinsics.npy"))
             object_poses = np.load(os.path.join(data_dir, "object_poses.npy"))
             raw_joint_params = np.load(os.path.join(data_dir, "joint_positions.npy"))
+            ## if len(images) == 0, select another directory
+            if len(images) == 0:
+                return self.__getitem__(idx + 1)
 
         except Exception as e:
             print(f"Error {e} loading data, skipping...")
             return self.__getitem__(idx + 1)
         
+        # print(data_dir, len(images))
         img_idx = generator.choice(len(images))
 
         image_path = os.path.join(data_dir, "image_{}.jpg".format(img_idx))
