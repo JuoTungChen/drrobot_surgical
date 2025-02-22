@@ -257,9 +257,10 @@ class MujocoActor:
         init_body_quat = self.model.body('baselink').quat[:].copy()
 
         # Apply random rotation around x, y, z to the baseline
-        theta_x = np.random.uniform(-np.pi/4, np.pi/4)
-        theta_y = np.random.uniform(-np.pi/4, np.pi/4)
-        theta_z = np.random.uniform(-np.pi/4, np.pi/4)
+
+        theta_x = np.random.uniform(-np.pi, np.pi)
+        theta_y = np.random.uniform(-np.pi, np.pi)
+        theta_z = np.random.uniform(-np.pi/2, np.pi/2)
         R_x = np.array([
             [1, 0, 0],
             [0, np.cos(theta_x), -np.sin(theta_x)],
