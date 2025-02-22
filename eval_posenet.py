@@ -138,7 +138,7 @@ def main(args):
         # data_dir = f"/home/iulian/chole_ws/src/sam2/data/surgripe/lnd_test"
         # original_image_path = data_dir + f"/{img_idx}.jpg" 
         # reference_image_path = data_dir + f"_segment_results//frame_{img_idx}_id_1.jpg" 
-        data_dir = f"/home/iulian/chole_ws/src/drrobot/data/LND_pose_train/test_sample_{idx}"
+        data_dir = f"/home/iulian/chole_ws/src/drrobot/data/LND_pose_train_new/test_sample_{idx}"
         original_image_path = data_dir + f"/image_{img_idx}.jpg" 
         reference_image_path = original_image_path  
         # object_poses = np.load(os.path.join(data_dir, "object_poses.npy"))
