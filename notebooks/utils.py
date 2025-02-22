@@ -21,6 +21,12 @@ import pandas as pd
 from skimage import measure
 from scipy.spatial.transform import Rotation as R
 from filterpy.kalman import KalmanFilter
+from scipy.linalg import expm  # Matrix exponential for SO(3) updates
+from pytorch_msssim import ssim
+from torch.linalg import matrix_exp
+import tqdm
+
+
 class Utils:
     def __init__(self):
         if 'notebooks' not in os.listdir(os.getcwd()):
@@ -59,6 +65,21 @@ class Utils:
             matrix[:3, :3] = rotation_orthogonal
             matrix[:, 3] = torch.tensor([0, 0, 0, 1], device=matrix.device)
         return matrix
+
+    # @staticmethod
+    # def enforce_homogeneous_transform(matrix):
+    #     rotation = matrix[:3, :3]
+    #     u, _, v = torch.svd(rotation)  # Ensure rotation matrix is in SO(3)
+    #     rotation_orthogonal = torch.mm(u, v.t())  # Differentiable projection onto SO(3)
+        
+    #     # Ensure homogeneous transformation without detaching gradients
+    #     matrix_homo = matrix.clone()
+    #     matrix_homo[:3, :3] = rotation_orthogonal
+    #     matrix_homo[3, :3] = matrix[3, :3]  # Keep translation unchanged
+    #     matrix_homo[:, 3] = torch.tensor([0, 0, 0, 1], dtype=matrix.dtype, device=matrix.device)
+        
+    #     return matrix_homo
+
 
     @staticmethod
     def enforce_homogeneous_transform_1(matrix):
@@ -146,13 +167,15 @@ class Utils:
     def optimization_w2v(camera, gaussians, background_color, reference_image, loss_fn, optimizer, joint_pose_result, world_view_transform_result, num_iterations=200, plot=False):
         video = []
         losses = []
-        
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=20)
+
         stopping_count = 0
         normalization_factor = torch.sum(reference_image ** 2).item()
         normalized_threshold = 1e-6 * normalization_factor
         previous_loss = None
-        loss_change_threshold = 1e-6
-        for i in range(num_iterations):
+        loss_change_threshold = 1e-7
+        init_world_view_transform = world_view_transform_result.clone()
+        for i in tqdm.tqdm(range(num_iterations)):
             # joint_pose_result = Utils.enforce_joint_limit(joint_pose_result)
             camera.joint_pose = joint_pose_result
             camera.world_view_transform = world_view_transform_result
@@ -170,6 +193,175 @@ class Utils:
                 print("Early stopping at", i)
                 break
             previous_loss = loss.item()
+
+            ## check gradient
+            # print("Gradients for joint", joint_pose_result.grad)
+            # print("Gradients for world_view_transform", world_view_transform_result.grad)
+
+
+            optimizer.zero_grad()
+            loss.backward()
+            scheduler.step(loss)
+
+            with torch.no_grad():
+                rotation = world_view_transform_result[:3, :3]
+                translation = world_view_transform_result[3, :3]
+                # Apply gradients
+                rotation_grad = world_view_transform_result.grad[:3, :3]
+                translation_grad = world_view_transform_result.grad[:3, 3]
+
+                rot_learning_rate = 0.3  # Example learning rate
+                trans_learning_rate = 3e-4  # Example learning rate
+                rotation_update = torch.eye(3, device=rotation.device) + rot_learning_rate * rotation_grad
+                rotation = torch.mm(rotation.T, rotation_update)
+                translation_grad = torch.clamp(translation_grad, -0.02, 0.02)  # Prevent extreme shifts
+
+                translation = translation - trans_learning_rate * translation_grad
+
+                # Recompose the matrix
+                world_view_transform_result[:3, :3] = rotation.T
+                world_view_transform_result[3, :3] = translation
+
+            optimizer.step()
+            with torch.no_grad():
+                world_view_transform_result.copy_(Utils.enforce_homogeneous_transform(world_view_transform_result))
+
+            if i % 10 == 0:
+                video.append(rendered_image.detach().cpu())
+        if plot:
+            Utils.plot_loss(losses)
+
+        ## calculate difference between initial and final world_view_transform (element wise)
+        diff = torch.abs(init_world_view_transform - world_view_transform_result)
+        print("Difference between initial and final world_view_transform:\n", diff)
+
+
+        return video, joint_pose_result, world_view_transform_result, pc, losses
+
+
+
+
+    @staticmethod
+    def optimization_w2v_rot(camera, gaussians, background_color, reference_image, optimizer, 
+                        joint_pose_result, rotation_result, translation_result, num_iterations=200, plot=False):
+
+        video = []
+        losses = []
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, factor=0.5, patience=20)
+        stopping_count = 0
+        normalization_factor = torch.sum(reference_image ** 2).item()
+        normalized_threshold = 1e-6 * normalization_factor
+        previous_loss = None
+        loss_change_threshold = 1e-6
+        init_rotation = rotation_result.clone()
+        init_translation = translation_result.clone()
+        world_view_transform_result = torch.eye(4, device="cuda")
+        # loss_fn = torch.nn.MSELoss()
+        # Loss function combining SSIM and MSE
+        def combined_loss(rendered, reference, alpha=0.8):
+            mse = F.mse_loss(rendered, reference)
+            
+            # Ensure inputs are 4D: (batch, channels, height, width)
+            rendered = rendered.unsqueeze(0) if rendered.dim() == 3 else rendered
+            reference = reference.unsqueeze(0) if reference.dim() == 3 else reference
+            
+            ssim_l = 1 - ssim(rendered, reference, data_range=1.0)
+            return alpha * ssim_l + (1 - alpha) * mse
+
+        # progree bar
+        for i in tqdm.tqdm(range(num_iterations)):
+            camera.joint_pose = joint_pose_result
+            camera.world_view_transform = torch.eye(4, device="cuda")
+            camera.world_view_transform[:3, :3] = rotation_result
+            camera.world_view_transform[3, :3] = translation_result
+
+            render_result = render(camera, gaussians, background_color)
+            rendered_image = torch.clamp(render_result['render'], 0, 1)
+            pc = render_result['pc']
+
+            loss = combined_loss(rendered_image, reference_image)
+            losses.append(loss.item())
+
+            ## early stopping
+            if previous_loss is not None:
+                loss_change = abs(previous_loss - loss.item())
+                if loss_change < loss_change_threshold:
+                    stopping_count += 1
+
+            if stopping_count == 50:
+                print("Early stopping at", i)
+                break
+            previous_loss = loss.item()
+
+            optimizer.zero_grad()
+            loss.backward()
+            scheduler.step(loss)
+
+
+            with torch.no_grad():
+                # Rotation update using skew-symmetric matrix
+                omega = rotation_result.grad.reshape(-1)[:3]  # Ensure it's a (3,) vector
+                skew_sym = torch.tensor([[0, -omega[2], omega[1]],
+                                        [omega[2], 0, -omega[0]],
+                                        [-omega[1], omega[0], 0]], dtype=torch.float32, device=rotation_result.device)
+
+                # Apply matrix exponential map (torch version, avoids SciPy)
+                rotation_update = matrix_exp(skew_sym)
+
+                # Update rotation matrix
+                rotation_result.copy_(rotation_update @ rotation_result)
+
+                # Apply translation update with gradient clamping
+                translation_grad = translation_result.grad
+                translation_grad = torch.clamp(translation_grad, -0.01, 0.01)  # Prevent extreme shifts
+                translation_result -= optimizer.param_groups[2]['lr'] * translation_grad
+
+            optimizer.step()
+
+            if i % 10 == 0:
+                video.append(rendered_image.detach().cpu())
+
+        if plot:
+            Utils.plot_loss(losses)
+
+        # Compute the difference between initial and final transformation
+        rotation_diff = torch.abs(init_rotation - rotation_result)
+        translation_diff = torch.abs(init_translation - translation_result)
+        print("Difference in rotation:\n", rotation_diff)
+        print("Difference in translation:\n", translation_diff)
+
+        return video, joint_pose_result, rotation_result, translation_result, pc, losses
+
+
+
+    @staticmethod
+    def optimization_w2v_test(camera, gaussians, background_color, reference_image, loss_fn, optimizer, joint_pose_result, world_view_transform_result, num_iterations=200, plot=False):
+        video = []
+        losses = []
+        
+        stopping_count = 0
+        normalization_factor = torch.sum(reference_image ** 2).item()
+        normalized_threshold = 1e-6 * normalization_factor
+        previous_loss = None
+        loss_change_threshold = 1e-7
+        for i in range(num_iterations):
+            # joint_pose_result = Utils.enforce_joint_limit(joint_pose_result)
+            camera.joint_pose = joint_pose_result
+            camera.world_view_transform = world_view_transform_result
+            render_result = render(camera, gaussians, background_color)
+            rendered_image = torch.clamp(render_result['render'], 0, 1)
+            pc = render_result['pc']
+            loss = loss_fn(rendered_image, reference_image)
+            losses.append(loss.item())
+            if previous_loss is not None:
+                loss_change = abs(previous_loss - loss.item())
+                if loss_change < loss_change_threshold:
+                    stopping_count += 1
+                    # print(f"Loss change is less than threshold. Count = {stopping_count}")
+            if stopping_count == 50:
+                print("Early stopping at", i)
+                break
+            previous_loss = loss.item()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -179,9 +371,7 @@ class Utils:
                 video.append(rendered_image.detach().cpu())
         if plot:
             Utils.plot_loss(losses)
-        return video, joint_pose_result, world_view_transform_result, pc
-    
-
+        return video, joint_pose_result, world_view_transform_result, pc, losses[-1], losses[0]
 
 
     @staticmethod
