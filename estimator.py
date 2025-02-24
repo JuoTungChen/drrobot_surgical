@@ -113,6 +113,7 @@ class PoseEstimator:
         self.pc = self.gaussians._xyz
         self.camera = sample_cameras[0]
         self.tooltip_l_idx, self.tooltip_r_idx = self.calculate_tooltip()
+        self.pitch_screw_idx = self.calculate_pitch_screw_point()
 
         # Initialize parameters
         # self.home_pose = [0.0, 0.0, 0.0]
@@ -196,6 +197,16 @@ class PoseEstimator:
 
         return min_z_idx, original_min_y_idx
 
+    def calculate_pitch_screw_point(self, x_threshold=0.003, z_offset=-0.005, z_threshold=0.001):
+
+        ## find the point with x and y around 0 and z = 0.005
+        filtered_indices = torch.logical_and(torch.logical_and(torch.abs(self.gaussians._xyz[:, 0]) < x_threshold, torch.abs(self.gaussians._xyz[:, 1]) < x_threshold), torch.abs(self.gaussians._xyz[:, 2] + z_offset) < 0.001)
+        filtered_points = self.gaussians._xyz[filtered_indices]
+        # print(filtered_points)
+        min_x, min_x_idx = torch.min(torch.abs(filtered_points[:, 0]), 0)
+        point_idx = torch.nonzero(filtered_indices)[min_x_idx][0]
+
+        return point_idx
 
     def image_reader(self, img_path):
         '''
@@ -222,18 +233,27 @@ class PoseEstimator:
 
         ## calculate middle point
         middle_point = (self.pc[self.tooltip_l_idx] + self.pc[self.tooltip_r_idx]) / 2
+        screw_point = self.pc[self.pitch_screw_idx]
 
-        R_x_180 = torch.tensor([
-            [1, 0, 0],
-            [0, -1, 0],
-            [0, 0, -1]
+        theta = self.joint_pose_result[0].item() + np.pi/2
+        theta_z = np.pi
+        R_z = torch.tensor([
+            [np.cos(theta_z), -np.sin(theta_z), 0],
+            [np.sin(theta_z),  np.cos(theta_z), 0],
+            [0,              0,             1]
         ], device='cuda:0')
 
+        R_x = torch.tensor([
+            [1, 0, 0],
+            [0, np.cos(theta), -np.sin(theta)],
+            [0, np.sin(theta), np.cos(theta)]
+        ], device='cuda:0')
+        
         ori_rotation = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], device='cuda:0')
 
-        middle_point_homogeneous = torch.cat([torch.tensor(middle_point, device='cuda:0'), torch.tensor([1.0], device='cuda:0')])
+        middle_point_homogeneous = torch.cat([torch.tensor(screw_point.clone().detach(), device='cuda:0'), torch.tensor([1.0], device='cuda:0')])
         T_wt_homogeneous = torch.eye(4, device='cuda:0')
-        T_wt_homogeneous[:3, :3] = ori_rotation #R_x_180
+        T_wt_homogeneous[:3, :3] = R_z @ R_x
         T_wt_homogeneous[:3, 3] = middle_point_homogeneous[:3]
         T_wc = self.world_view_transform_result  #.transpose(1, 0)
 
@@ -389,11 +409,29 @@ class PoseEstimator:
 
         return pose_rotation_1#, pose_rotation_2
 
-    def predict(self, img_path):
+    def predict(self, img_path, pose_gt):
 
         img = self.image_reader(img_path)
+        # scale_gt = 1e-3
 
-        ## ------ Configure Camera Parameters ------ ##
+        # theta = self.joint_pose_result[0].item() + np.pi/2
+        # theta_z = np.pi
+        # R_z = torch.tensor([
+        #     [np.cos(theta_z), -np.sin(theta_z), 0],
+        #     [np.sin(theta_z),  np.cos(theta_z), 0],
+        #     [0,              0,             1]
+        # ], device='cuda:0')
+
+        # R_x = torch.tensor([
+        #     [1, 0, 0],
+        #     [0, np.cos(theta), -np.sin(theta)],
+        #     [0, np.sin(theta), np.cos(theta)]
+        # ], device='cuda:0')
+
+        # ## ------ Configure Camera Parameters ------ ##
+        # self.pose = np.eye(4)
+        # self.pose[:3, :3] = pose_gt[:3, :3]
+        # self.pose[:3, 3] = scale_gt * pose_gt[:3, 3]
         self.pose = self.get_posenet_prediction(img)
 
         ## decompose the pose to translation and rotation
@@ -403,9 +441,6 @@ class PoseEstimator:
         euler = Rotation.from_matrix(pose_rotation).as_euler('xyz')
         
         pose_rot_1, pose_rot_2 = None, None
-
-
-
 
         if np.abs(euler[0]) < np.pi/4 or np.abs(euler[0]) > 3 * np.pi/4:
             print("\ninhibiting x rotation")
@@ -441,12 +476,23 @@ class PoseEstimator:
                 {"params": self.world_view_transform_result, "lr": self.translation_lr},
             ])
 
+
+            result = render(self.camera, self.gaussians, self.background_color)
+
+            # Use the raw alpha channel as a continuous mask
+            mask = result['render']  # Continuous alpha values, directly from render_alphas
+
+            plt.figure()
+
+            # Display the mask (optional, normalized for visualization)
+            Utils.display_render(torch.clamp(mask, 0, 1))
+
             # self.video, self.joint_pose_result, self.rotation_result, self.translation_result, self.pc, losses= Utils.optimization_w2v_rot(self.camera, self.gaussians, self.background_color, self.reference_image, 
             #                                                                                self.optimizer, self.joint_pose_result, self.rotation_result, self.translation_result, self.num_iterations, plot=True)
 
             self.video, self.joint_pose_result, self.world_view_transform_result, self.pc, losses = Utils.optimization_w2v(
             self.camera, self.gaussians, self.background_color, self.reference_image, self.loss_fn, self.optimizer,
-            self.joint_pose_result, self.world_view_transform_result, num_iterations=self.num_iterations, plot=True
+            self.joint_pose_result, self.world_view_transform_result, num_iterations=self.num_iterations, plot=False
             )
 
 
@@ -490,7 +536,6 @@ class PoseEstimator:
             ])
 
 
-            # gaussians._xyz = torch.matmul(gaussians._xyz, R_z.T)  # Transpose R_z for proper multiplication
             result = render(self.camera, self.gaussians, self.background_color)
 
             # Use the raw alpha channel as a continuous mask
@@ -506,7 +551,7 @@ class PoseEstimator:
 
             self.video, self.joint_pose_result, self.world_view_transform_result, self.pc, losses = Utils.optimization_w2v(
                 self.camera, self.gaussians, self.background_color, self.reference_image, self.loss_fn, self.optimizer,
-                self.joint_pose_result, self.world_view_transform_result, num_iterations=self.num_iterations, plot=True
+                self.joint_pose_result, self.world_view_transform_result, num_iterations=self.num_iterations, plot=False
             )
 
 
@@ -533,12 +578,20 @@ class PoseEstimator:
         # Utils.display_render(torch.clamp(mask, 0, 1))
 
 
-        _, T_tc = self.convert_transformation()
+        tool_pose_2d, T_tc = self.convert_transformation()
 
-        Utils.make_video(self.video, filename="pose_est_init", fps=10)
+        # Utils.make_video(self.video, filename="pose_est_init", fps=10)
         # IPImage(filename="pose_est_init.gif")
+        original_image_width = 960
+        original_image_height = 540
+        tool_poses_init = tool_pose_2d
+        scale = original_image_width / self.image_width
+        offset = (original_image_width - original_image_height) /2
+        starting_point = [tool_poses_init[0] * scale, tool_poses_init[1] * scale]
+        projected_point = [starting_point[0], starting_point[1] - offset]
 
-        return T_tc
+
+        return T_tc, projected_point
 
 
 
