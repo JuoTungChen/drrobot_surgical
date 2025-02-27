@@ -56,43 +56,6 @@ class Utils:
         
         return F.pad(image.unsqueeze(0), padding, mode='constant', value=0).squeeze(0)
 
-    @staticmethod
-    def enforce_homogeneous_transform(matrix):
-        with torch.no_grad():
-            rotation = matrix[:3, :3]
-            u, _, v = torch.svd(rotation)
-            rotation_orthogonal = torch.mm(u, v.t())
-            matrix[:3, :3] = rotation_orthogonal
-            matrix[:, 3] = torch.tensor([0, 0, 0, 1], device=matrix.device)
-        return matrix
-
-    # @staticmethod
-    # def enforce_homogeneous_transform(matrix):
-    #     rotation = matrix[:3, :3]
-    #     u, _, v = torch.svd(rotation)  # Ensure rotation matrix is in SO(3)
-    #     rotation_orthogonal = torch.mm(u, v.t())  # Differentiable projection onto SO(3)
-        
-    #     # Ensure homogeneous transformation without detaching gradients
-    #     matrix_homo = matrix.clone()
-    #     matrix_homo[:3, :3] = rotation_orthogonal
-    #     matrix_homo[3, :3] = matrix[3, :3]  # Keep translation unchanged
-    #     matrix_homo[:, 3] = torch.tensor([0, 0, 0, 1], dtype=matrix.dtype, device=matrix.device)
-        
-    #     return matrix_homo
-
-
-    @staticmethod
-    def enforce_homogeneous_transform_1(matrix):
-        R = matrix[:3, :3]
-        t = matrix[:3, 3]
-        U, _, Vt = torch.linalg.svd(R, full_matrices=False)
-        R_orthonormal = U @ Vt
-        if torch.det(R_orthonormal) < 0:
-            R_orthonormal[:, -1] *= -1
-        T_homogeneous = torch.eye(4, device=matrix.device, dtype=matrix.dtype)
-        T_homogeneous[:3, :3] = R_orthonormal.T
-        T_homogeneous[3, :3] = t
-        return T_homogeneous
 
     @staticmethod
     def decompose_homogeneous_matrix(matrix):
@@ -164,6 +127,17 @@ class Utils:
         return video, joint_pose_result, Utils.assemble_homogeneous_matrix(euler_angles.detach(), translation.detach()), euler_angles, translation
 
     @staticmethod
+    def enforce_homogeneous_transform(matrix):
+        with torch.no_grad():
+            rotation = matrix[:3, :3]
+            u, _, v = torch.svd(rotation)
+            rotation_orthogonal = torch.mm(u, v.t())
+            matrix[:3, :3] = rotation_orthogonal
+            matrix[:, 3] = torch.tensor([0, 0, 0, 1], device=matrix.device)
+        return matrix
+
+
+    @staticmethod
     def optimization_w2v(camera, gaussians, background_color, reference_image, loss_fn, optimizer, joint_pose_result, world_view_transform_result, num_iterations=200, plot=False):
         video = []
         losses = []
@@ -175,7 +149,8 @@ class Utils:
         previous_loss = None
         loss_change_threshold = 1e-7
         init_world_view_transform = world_view_transform_result.clone()
-        for i in tqdm.tqdm(range(num_iterations)):
+        for i in range(num_iterations):
+        # for i in tqdm.tqdm(range(num_iterations)):
             # joint_pose_result = Utils.enforce_joint_limit(joint_pose_result)
             camera.joint_pose = joint_pose_result
             camera.world_view_transform = world_view_transform_result
@@ -193,10 +168,6 @@ class Utils:
                 print("Early stopping at", i)
                 break
             previous_loss = loss.item()
-
-            ## check gradient
-            # print("Gradients for joint", joint_pose_result.grad)
-            # print("Gradients for world_view_transform", world_view_transform_result.grad)
 
 
             optimizer.zero_grad()
@@ -233,7 +204,7 @@ class Utils:
 
         ## calculate difference between initial and final world_view_transform (element wise)
         diff = torch.abs(init_world_view_transform - world_view_transform_result)
-        print("Difference between initial and final world_view_transform:\n", diff)
+        # print("Difference between initial and final world_view_transform:\n", diff)
 
 
         return video, joint_pose_result, world_view_transform_result, pc, losses
@@ -448,7 +419,7 @@ class Utils:
         kf = Utils.init_kalman_filter(world_view_transform_result.clone().detach().cpu().numpy().transpose(1, 0), dt)
 
 
-        for i in range(num_iterations):
+        for i in tqdm.tqdm(range(num_iterations)):
             # Predict next state
             kf.predict()
 
