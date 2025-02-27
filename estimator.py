@@ -31,6 +31,211 @@ from notebooks.utils import Utils
 import argparse
 from torchvision import transforms
 from pytorch_msssim import ssim
+import copy
+import torchvision.transforms.functional as FT
+
+
+def compute_initial_position(reference_image):
+    # Create a mask where a pixel is non-black if the sum over channels is greater than zero.
+    mask = (reference_image.sum(dim=0) > 0.1)
+    
+    # Count the number of non-black pixels.
+    count = int(mask.sum().item())
+    
+    # If no non-black pixel is found, return count and a default center.
+    if count == 0:
+        return (None, None)
+    
+    # Get indices (row, col) of non-black pixels.
+    indices = torch.nonzero(mask)  # shape: (num_nonblack, 2)
+    
+    # Compute the average center as the mean of row indices and column indices.
+    avg_coords = indices.float().mean(dim=0)
+    average_center = (avg_coords[0].item(), avg_coords[1].item())
+    
+    return average_center
+
+def grid_search_best_pose(average_center,example_camera, gaussians, background_color, reference_image, home_pose, divide_number_angle, divide_number_pos, first_run, first_run_result):
+
+    # Create “master” copies of inputs that should remain unchanged across loops.
+    # For tensors, use .clone(); for other mutable objects, use deepcopy.
+    original_gaussians = copy.deepcopy(gaussians)
+    original_background_color = copy.deepcopy(background_color)
+    if torch.is_tensor(reference_image):
+        original_reference_image = reference_image.clone()
+    else:
+        original_reference_image = copy.deepcopy(reference_image)
+    
+    best_final_loss = float('inf')
+    best_initial_loss = float('inf')
+    best_final_loss_index = None
+    best_initial_loss_index = None
+    num_combinations = divide_number_angle * (divide_number_pos ** 2)  # Total number of combinations
+    for i in range(num_combinations):
+        # Deepcopy the camera so that changes in one loop do not affect others.
+        camera_copy = copy.deepcopy(example_camera)
+        # Generate the initial pose using the provided index.
+        T_rotated_torch,_ = generate_initial_pose(camera_copy, divide_number_angle, divide_number_pos, i, average_center, first_run, first_run_result)
+        camera_copy.world_view_transform = T_rotated_torch
+        
+        # Initialize parameters using copies.
+        joint_pose_result = torch.tensor(home_pose, requires_grad=True, device="cuda")
+        world_view_transform_result = camera_copy.world_view_transform.clone().detach().to("cuda").requires_grad_(True)
+
+        # Define learning rates.
+        joint_pose_lr = 1e-3
+        translation_lr = 1e-4
+
+        # Create a fresh optimizer for this iteration.
+        optimizer = torch.optim.Adam([
+            {"params": joint_pose_result, "lr": joint_pose_lr},
+            {"params": world_view_transform_result, "lr": translation_lr},
+        ])
+
+        num_iterations = 300
+        loss_fn = torch.nn.MSELoss()
+        video = []
+
+        # Create fresh copies of the remaining inputs.
+        gaussians_copy = copy.deepcopy(original_gaussians)
+        background_color_copy = copy.deepcopy(original_background_color)
+        if torch.is_tensor(original_reference_image):
+            reference_image_copy = original_reference_image.clone()
+        else:
+            reference_image_copy = copy.deepcopy(original_reference_image)
+
+        # Run the optimization function using the copied inputs.
+        video, joint_pose_result_out, world_view_transform_result_out, pc, loss = \
+            Utils.optimization_w2v(
+                camera_copy, gaussians_copy, background_color_copy, reference_image_copy,
+                loss_fn, optimizer, joint_pose_result, world_view_transform_result,
+                num_iterations=num_iterations, plot=False
+            )
+        final_loss=loss[-1]
+        initial_loss=loss[0]
+        final_render = torch.clamp(render(camera_copy, gaussians_copy, background_color_copy)['render'], 0, 1)
+        padded_rendered_image = Utils.pad_to_match_aspect(final_render, 1.0)
+
+        # Convert images for visualization
+        rendered_image_np = padded_rendered_image.detach().permute(1, 2, 0).cpu().numpy()
+
+        count, _=compute_nonblack_statistics(rendered_image_np)
+        print(count)
+        
+        
+        final_loss=final_loss/count
+        initial_loss=initial_loss/count
+
+        # Track the best losses along with the corresponding index.
+        if final_loss < best_final_loss:
+            best_final_loss = final_loss
+            best_final_loss_index = i
+
+        if initial_loss < best_initial_loss:
+            best_initial_loss = initial_loss
+            best_initial_loss_index = i
+
+    return best_final_loss_index, best_initial_loss_index
+
+
+
+def generate_initial_pose(example_camera, divide_number_angle, divide_number_pos, index, average_center, first_run, first_run_result):
+    # Return the "index"th combination out of divide_number_angle * (divide_number_pos^2) total combinations.
+
+    # example_camera = sample_cameras[0]
+
+    ## Customize camera parameters
+    cam = mujoco.MjvCamera()
+    mujoco.mjv_defaultCamera(cam)
+    cam.distance = 0.1
+    cam.azimuth = -50.0
+    cam.elevation = -10
+    cam.lookat = (0, 0, -0.0)
+    w2v = compute_camera_extrinsic_matrix(cam)
+    if first_run:
+        t0_up=min((average_center[1]-128)/256*0.08+0.005,0.04)
+        t0_down=max((average_center[1]-128)/256*0.08-0.005,-0.04)
+        t1_up=min((average_center[0]-128)/256*0.08+0.005,0.04)
+        t1_down=max((average_center[0]-128)/256*0.08-0.005,-0.04)
+
+        # Generate uniformly spaced values for theta, t[0] and t[1]
+        thetas = np.linspace(-np.pi, np.pi, divide_number_angle)
+        t0_vals = np.linspace(t0_down, t0_up, divide_number_pos)
+        t1_vals = np.linspace(t1_down, t1_up, divide_number_pos)
+    else:
+        # Generate uniformly spaced values for theta, t[0] and t[1]
+        thetas = np.linspace(first_run_result[0], first_run_result[0], divide_number_angle)
+        t0_vals = np.linspace(first_run_result[1], first_run_result[1], divide_number_pos)
+        t1_vals = np.linspace(first_run_result[2], first_run_result[2], divide_number_pos)
+
+
+
+    
+    # Compute the combination indices:
+    # Total combinations = divide_number_angle * (divide_number_pos)^2
+    d_pos = divide_number_pos
+    theta_idx = index // (d_pos * d_pos)
+    remainder = index % (d_pos * d_pos)
+    t0_idx = remainder // d_pos
+    t1_idx = remainder % d_pos
+    
+    theta = thetas[theta_idx]
+
+    ## Rotate the view using the computed theta
+    R_z = np.array([
+        [np.cos(theta), -np.sin(theta), 0],
+        [np.sin(theta),  np.cos(theta), 0],
+        [0,              0,             1]
+    ])
+
+    R = w2v[:3, :3]
+    t = w2v[:3, 3].copy()  # Make a copy to avoid modifying the original
+    
+    t[0] = t0_vals[t0_idx]
+    t[1] = t1_vals[t1_idx]
+    t[2] =0.1
+
+    result=np.empty(3)
+    result[0]=theta
+    result[1]=t[0]
+    result[2]=t[1]
+
+    print(index, theta,t[0],t[1])
+    # Apply the rotation
+    R_rotated = R_z @ R  # Rotate the original rotation matrix
+    t_rotated = t       # Use the modified translation vector
+
+    # Combine back into a transformation matrix
+    T_rotated = np.eye(4)
+    T_rotated[:3, :3] = R_rotated
+    T_rotated[:3, 3] = t_rotated
+
+    T_rotated_torch = torch.tensor(T_rotated, dtype=example_camera.world_view_transform.dtype)\
+                            .transpose(0, 1)\
+                            .to(example_camera.data_device)
+    return T_rotated_torch, result
+
+def compute_nonblack_statistics(rendered_image_np):
+    gray = rendered_image_np.sum(axis=2)
+    
+    # Create a mask for non-black pixels. A pixel is considered non-black if its sum > 0.
+    mask = gray > 0.03
+    
+    # Count the number of non-black pixels.
+    count = int(np.sum(mask))
+    
+    # If there are no non-black pixels, return count and a default center.
+    if count == 0:
+        return 0.00001, (None, None)
+    
+    # Get the indices (row, col) of non-black pixels.
+    indices = np.argwhere(mask)
+    
+    # Compute the average coordinates (mean of rows and columns).
+    average_center = indices.mean(axis=0)
+    
+    return count, (average_center[0], average_center[1])
+    
 
 
 def invert_H(H):
@@ -109,15 +314,16 @@ class PoseEstimator:
         self.root_dir = "/home/iulian/chole_ws/src/drrobot"
         ## ------ Initialize Gaussian Renderer ------ ##
         sys.argv = ['']
-        self.gaussians, self.background_color, sample_cameras, self.kinematic_chain = initialize_gaussians(model_path=self.root_dir+"/output/LND_short", bg_color=[0, 0, 0])
+        self.gaussians, self.background_color, self.sample_cameras, self.kinematic_chain = initialize_gaussians(model_path=self.root_dir+"/output/LND_no_shaft_new_7", bg_color=[0, 0, 0])
         self.pc = self.gaussians._xyz
-        self.camera = sample_cameras[0]
-        self.tooltip_l_idx, self.tooltip_r_idx = self.calculate_tooltip()
+        self.camera = self.sample_cameras[0]
+        # self.tooltip_l_idx, self.tooltip_r_idx = self.calculate_tooltip()
         self.pitch_screw_idx = self.calculate_pitch_screw_point()
+        self.ee_point_idx = self.calculate_ee_point()
 
         # Initialize parameters
-        # self.home_pose = [0.0, 0.0, 0.0]
-        self.home_pose = [0.0, 0.2, -0.5]
+        self.home_pose = [0.0, 0.0, 0.0]
+        # self.home_pose = [0.0, 0.2, -0.5]
 
 
         # camera parameters
@@ -134,11 +340,12 @@ class PoseEstimator:
         self.translation_result = self.camera.world_view_transform[3, :3].clone().detach().to("cuda").requires_grad_(True)
 
         ## ------ Setting Optimization Parameters ------ ##
-
-        self.joint_pose_lr = 5e-4
-        self.rotation_lr = 0.01
-        # translation_lr = 1e-4
-        self.translation_lr = 3e-4
+        self.joint_pose_lr = 1e-3
+        self.translation_lr = 1e-4
+        # self.joint_pose_lr = 5e-4
+        # self.rotation_lr = 0.01
+        # # translation_lr = 1e-4
+        # self.translation_lr = 3e-4
 
         # Define optimizer with separate learning rates
         # self.optimizer = torch.optim.Adam([
@@ -146,11 +353,12 @@ class PoseEstimator:
         #     {"params": self.world_view_transform_result, "lr": self.translation_lr},
         # ])
 
+        self.divide_number_pos = 1
+        self.divide_number_angle = 36
 
+        self.num_iterations = 300
 
-        self.num_iterations = 1000
-
-        # self.loss_fn = torch.nn.MSELoss()
+        self.loss_fn = torch.nn.MSELoss()
         def combined_loss(rendered, reference, alpha=0.8):
             mse = F.mse_loss(rendered, reference)
             
@@ -161,10 +369,10 @@ class PoseEstimator:
             ssim_l = 1 - ssim(rendered, reference, data_range=1.0)
             return alpha * ssim_l + (1 - alpha) * mse
         
-        self.loss_fn = combined_loss
+        # self.loss_fn = combined_loss
 
         self.video = []
-
+        self.T_tc_homogeneous_list = []
 
         ## ------ Load PoseNet Model ------ ##
         from train_init_network import PoseNet, PoseNetTransformer
@@ -181,7 +389,8 @@ class PoseEstimator:
 
         self.model.eval()  # Set to evaluation mode
         self.pose = np.eye(4)
-    
+
+        self.first_run_result=np.empty((3)) # Order: theta, x, y
 
     def calculate_tooltip(self, x_threshold=-0.003, z_threshold=-0.005):
         """
@@ -207,12 +416,22 @@ class PoseEstimator:
         point_idx = torch.nonzero(filtered_indices)[min_x_idx][0]
 
         return point_idx
+    
+    def calculate_ee_point(self, x_threshold=0.003, z_offset=0.005, z_threshold=0.001):
+        filtered_indices = torch.logical_and(torch.logical_and(torch.abs(self.gaussians._xyz[:, 0]) < x_threshold, torch.abs(self.gaussians._xyz[:, 1]) < x_threshold), torch.abs(self.gaussians._xyz[:, 2] + z_offset) < z_threshold)
+        filtered_points = self.gaussians._xyz[filtered_indices]
+        print(filtered_points)
+        min_y, min_y_idx = torch.min(torch.abs(filtered_points[:, 0]), 0)
+        point_idx = torch.nonzero(filtered_indices)[min_y_idx][0]
 
-    def image_reader(self, img_path):
+        return point_idx
+
+    def image_reader(self, img_path, first_img=False):
         '''
         read image and preprocessing
         '''
-
+        # print("image reader:", img_path)
+        self.img_path = img_path
         ## ------ Display Reference Image ------ ##
         ## read the image
         # original_image = Image.open(original_image_path).convert('RGB')
@@ -221,18 +440,66 @@ class PoseEstimator:
         self.reference_image = torch.tensor(np.array(self.reference_image) / 255.0).permute(2, 0, 1).float().to("cuda")  # Normalized [0, 1]
         self.reference_image = Utils.pad_to_match_aspect(self.reference_image, 1.0)
 
+        if first_img:
+            enhanced_image = FT.adjust_brightness(self.reference_image, brightness_factor=0.8)  # Increase brightness by 20%
+            self.reference_image = FT.adjust_contrast(enhanced_image, contrast_factor=0.5)    # Increase contrast by 50%
+
         self.reference_image = F.interpolate(self.reference_image.unsqueeze(0), size=(256,256), mode='bilinear', align_corners=False).squeeze(0)
         self.reference_image_small = F.interpolate(self.reference_image.unsqueeze(0), size=(224,224), mode='bilinear', align_corners=False).squeeze(0)
         # Calculate target aspect ratio (reference image)
         self.target_aspect_ratio = self.reference_image.shape[2] / self.reference_image.shape[1]
 
-        return self.reference_image_small
+        return self.reference_image_small, self.reference_image
     
+
+
+    def convert_transformation_ee(self):
+
+        ## calculate middle point
+        # middle_point = (self.pc[self.tooltip_l_idx] + self.pc[self.tooltip_r_idx]) / 2
+        ee_point = self.pc[self.ee_point_idx]
+
+        theta = self.joint_pose_result[0].item() + np.pi/2
+        theta_z = np.pi
+        R_z = torch.tensor([
+            [np.cos(theta_z), -np.sin(theta_z), 0],
+            [np.sin(theta_z),  np.cos(theta_z), 0],
+            [0,              0,             1]
+        ], device='cuda:0')
+
+        R_x = torch.tensor([
+            [1, 0, 0],
+            [0, np.cos(theta), -np.sin(theta)],
+            [0, np.sin(theta), np.cos(theta)]
+        ], device='cuda:0')
+        
+        ori_rotation = torch.tensor([[1, 0, 0], [0, 1, 0], [0, 0, 1]], device='cuda:0')
+
+        middle_point_homogeneous = torch.cat([torch.tensor(ee_point.clone().detach(), device='cuda:0'), torch.tensor([1.0], device='cuda:0')])
+        T_wt_homogeneous = torch.eye(4, device='cuda:0')
+        T_wt_homogeneous[:3, :3] = R_z 
+        T_wt_homogeneous[:3, 3] = middle_point_homogeneous[:3]
+        T_wc = self.world_view_transform_result  #.transpose(1, 0)
+
+        # Calculate the position of the surgical tool in the camera frame
+        T_tc_homogeneous = T_wt_homogeneous.T @ T_wc
+
+        projected_pose = self.P.T.detach().cpu() @ T_tc_homogeneous.detach().cpu()
+
+        # Normalize by the homogeneous coordinate (w) to get 2D image coordinates
+        x_2d = ((projected_pose[0] / projected_pose[2] + 1) * 0.5) * self.image_width
+        y_2d = ((projected_pose[1] / projected_pose[2] + 1) * 0.5) * self.image_height
+
+        tool_pose_2d = (x_2d, y_2d)
+        T_tc = T_tc_homogeneous.detach().cpu().numpy().transpose(1, 0)
+
+        return tool_pose_2d, T_tc        
+
 
     def convert_transformation(self):
 
         ## calculate middle point
-        middle_point = (self.pc[self.tooltip_l_idx] + self.pc[self.tooltip_r_idx]) / 2
+        # middle_point = (self.pc[self.tooltip_l_idx] + self.pc[self.tooltip_r_idx]) / 2
         screw_point = self.pc[self.pitch_screw_idx]
 
         theta = self.joint_pose_result[0].item() + np.pi/2
@@ -269,10 +536,7 @@ class PoseEstimator:
         tool_pose_2d = (x_2d, y_2d)
         T_tc = T_tc_homogeneous.detach().cpu().numpy().transpose(1, 0)
 
-        return tool_pose_2d, T_tc
-
-    # def convert_to_shell_transform(self):
-        
+        return tool_pose_2d, T_tc        
 
 
     def display_render(self):
@@ -408,6 +672,192 @@ class PoseEstimator:
         # pose_rotation_2 = Rotation.from_euler('xyz', euler).as_matrix()
 
         return pose_rotation_1#, pose_rotation_2
+
+
+    def predict_rand_init(self, img_path, first_run, first_img):
+        self.num_iterations = 100
+        img_s, img = self.image_reader(img_path, first_img)
+        average_center=compute_initial_position(img)
+        # self.average_center = self.compute_initial_position()
+        if first_run:
+            angle_divide_num=36
+            distance_divide_num=3
+        else:
+            angle_divide_num=1
+            distance_divide_num=1
+
+        # best_final_loss_index, best_initial_loss_index=grid_search_best_pose(average_center, self.camera, self.gaussians, self.background_color, self.reference_image, self.home_pose, angle_divide_num,distance_divide_num, first_run, self.first_run_result)
+        # print("Best final loss index:", best_final_loss_index)
+        # print("Best initial loss index:", best_initial_loss_index)
+
+
+        # best_final_loss_index, best_initial_loss_index = self.grid_search_best_pose()
+
+        # print("best_final_loss_index", best_final_loss_index)
+        # print("best_initial_loss_index", best_initial_loss_index)
+
+        example_camera = self.sample_cameras[0]
+        # if first_run:
+        #     T_rotated_torch, result=generate_initial_pose(example_camera, angle_divide_num,distance_divide_num, best_final_loss_index, average_center,first_run, self.first_run_result)
+        #     self.first_run_result= result
+        # else:
+        #     T_rotated_torch,_=generate_initial_pose(example_camera, angle_divide_num,distance_divide_num, best_final_loss_index, average_center,first_run, self.first_run_result)
+        
+        
+        ## tissue lifting
+        
+        # T_rotated_torch =  torch. tensor([[-5.0000e-01, -8.6603e-01,  6.0302e-17,  0.0000e+00],
+        # [-1.5038e-01,  8.6824e-02, -9.8481e-01,  0.0000e+00],
+        # [ 8.5287e-01, -4.9240e-01, -1.7365e-01,  0.0000e+00],
+        # [ 2.0000e-02,  0.0000e+00,  1.0000e-01,  1.0000e+00]])
+
+        ## needle pickup
+        T_rotated_torch =  torch.tensor([[-5.0000e-01, -8.6603e-01,  6.0302e-17,  0.0000e+00],
+        [-1.5038e-01,  8.6824e-02, -9.8481e-01,  0.0000e+00],
+        [ 8.5287e-01, -4.9240e-01, -1.7365e-01,  0.0000e+00],
+        [ 1.5000e-02, -5.0000e-03,  7.5000e-02,  1.0000e+00]])
+        # T_rotated_torch=self.generate_initial_pose(example_camera, best_final_loss_index)
+        # print("T_rotated_torch", T_rotated_torch)
+
+
+        # T_rotated_torch = torch.tensor(self.pose, dtype=self.camera.world_view_transform.dtype).transpose(0, 1).to(self.camera.data_device)
+        self.camera.world_view_transform = T_rotated_torch
+
+
+        ## ------ Differentiable Rendering ------ ##
+
+        self.camera.joint_pose = torch.tensor(self.home_pose,).requires_grad_(True)
+        self.camera.world_view_transform.requires_grad_(True) 
+
+        self.joint_pose_result = torch.tensor(self.home_pose, requires_grad=True, device="cuda")  # Initial joint pose
+        self.world_view_transform_result = self.camera.world_view_transform.clone().detach().to("cuda").requires_grad_(True) # Initial camera transform
+
+        self.optimizer = torch.optim.Adam([
+            # {"params": self.joint_pose_result, "lr": self.joint_pose_lr},
+            {"params": self.world_view_transform_result, "lr": self.translation_lr},
+        ])
+
+
+        # result = render(self.camera, self.gaussians, self.background_color)
+
+        # # Use the raw alpha channel as a continuous mask
+        # mask = result['render']  # Continuous alpha values, directly from render_alphas
+
+        # plt.figure()
+
+        # # Display the mask (optional, normalized for visualization)
+        # Utils.display_render(torch.clamp(mask, 0, 1))
+
+
+        # print("\n------------------- Optimizing -------------------\n")
+
+        self.video, self.joint_pose_result, self.world_view_transform_result, self.pc, losses = Utils.optimization_w2v(
+            self.camera, self.gaussians, self.background_color, self.reference_image, self.loss_fn, self.optimizer,
+            self.joint_pose_result, self.world_view_transform_result, num_iterations=self.num_iterations, plot=False
+        )
+
+        self.camera.world_view_transform = self.world_view_transform_result
+        self.camera.joint_pose = self.joint_pose_result
+
+
+        tool_pose_2d, T_tc = self.convert_transformation()
+
+        # Utils.make_video(self.video, filename="pose_est_init", fps=10)
+        # IPImage(filename="pose_est_init.gif")
+        original_image_width = 960
+        original_image_height = 540
+        tool_poses_init = tool_pose_2d
+        scale = original_image_width / self.image_width
+        offset = (original_image_width - original_image_height) /2
+        starting_point = [tool_poses_init[0] * scale, tool_poses_init[1] * scale]
+        projected_point = [starting_point[0], starting_point[1] - offset]
+
+
+        return T_tc, projected_point, self.camera.world_view_transform, self.camera.joint_pose
+    
+    def loop_predict(self, imgs):
+        joint_pose_results = []
+        world_view_transform_results = []
+        pc_results = {}
+        videos = []
+        world_view_transform_result = self.world_view_transform_result.clone().detach().to("cuda").requires_grad_(True)
+        joint_pose_result = self.joint_pose_result.clone().detach().to("cuda").requires_grad_(True)
+        optimizer = torch.optim.Adam([
+            {"params": joint_pose_result, "lr": self.joint_pose_lr},
+            {"params": world_view_transform_result, "lr": self.translation_lr},
+        ])
+        loss_fn = torch.nn.MSELoss()
+        for n, img in enumerate(imgs):
+            ## call the optimization function
+            video, joint_pose_result, world_view_transform_result, pc, loss = Utils.optimization_w2v(self.camera, self.gaussians, self.background_color, img, loss_fn, optimizer, joint_pose_result, world_view_transform_result, num_iterations=10)
+            
+            joint_pose_results.append(joint_pose_result.clone().detach())
+            world_view_transform_results.append(world_view_transform_result.clone().detach())
+            pc_results[n] = pc.detach().cpu().numpy()
+
+            videos.append(video[-1])    # append the last frame of the video
+
+        return joint_pose_results, world_view_transform_results, pc_results, videos
+
+
+    def predict_rest_frames(self, img_path, last_pose, joint_p):
+
+        # self.average_center = self.compute_initial_position()
+
+        self.num_iterations = 10
+        # best_final_loss_index, best_initial_loss_index = self.grid_search_best_pose()
+        img_s, img = self.image_reader(img_path)
+
+        T_rotated_torch=last_pose
+        # T_rotated_torch=self.generate_initial_pose(example_camera, best_final_loss_index)
+        # print("T_rotated_torch", T_rotated_torch)
+
+
+        # T_rotated_torch = torch.tensor(self.pose, dtype=self.camera.world_view_transform.dtype).transpose(0, 1).to(self.camera.data_device)
+        self.camera.world_view_transform = T_rotated_torch
+
+
+
+        ## ------ Differentiable Rendering ------ ##
+
+        self.camera.joint_pose = joint_p
+        self.camera.world_view_transform.requires_grad_(True) 
+
+        self.joint_pose_result = self.camera.joint_pose.clone().detach().to("cuda").requires_grad_(True)  # Initial joint pose
+        self.world_view_transform_result = self.camera.world_view_transform.clone().detach().to("cuda").requires_grad_(True) # Initial camera transform
+
+        self.optimizer = torch.optim.Adam([
+            {"params": self.joint_pose_result, "lr": self.joint_pose_lr},
+            {"params": self.world_view_transform_result, "lr": self.translation_lr},
+        ])
+
+
+        # print("\n------------------- Optimizing -------------------\n")
+        loss_fn = torch.nn.MSELoss()
+        self.video, joint_pose_result, world_view_transform_result, self.pc = Utils.optimization_kalman(
+            self.camera, self.gaussians, self.background_color, self.reference_image, loss_fn, self.optimizer,
+            self.joint_pose_result, self.world_view_transform_result, num_iterations=self.num_iterations, plot=False
+        )
+
+        self.camera.world_view_transform = world_view_transform_result
+        self.camera.joint_pose = joint_pose_result
+
+
+        tool_pose_2d, T_tc = self.convert_transformation()
+
+        # Utils.make_video(self.video, filename="pose_video", fps=10)
+        # IPImage(filename="pose_est_init.gif")
+        original_image_width = 960
+        original_image_height = 540
+        tool_poses_init = tool_pose_2d
+        scale = original_image_width / self.image_width
+        offset = (original_image_width - original_image_height) /2
+        starting_point = [tool_poses_init[0] * scale, tool_poses_init[1] * scale]
+        projected_point = [starting_point[0], starting_point[1] - offset]
+
+
+        return T_tc, projected_point, self.camera.world_view_transform, self.video[-1]
+
 
     def predict(self, img_path, pose_gt):
 
@@ -592,6 +1042,24 @@ class PoseEstimator:
 
 
         return T_tc, projected_point
+    
+    def quaternion_to_rotation_matrix(self, quaternion):
+        """
+        Convert a quaternion to a rotation matrix.
+
+        Args:
+            quaternion: A list containing the quaternion [x, y, z, w].
+
+        Returns:
+            A 3x3 rotation matrix.
+        """
+        x, y, z, w = quaternion
+        rotation_matrix = np.array([
+            [1 - 2 * y**2 - 2 * z**2, 2 * x * y - 2 * z * w, 2 * x * z + 2 * y * w],
+            [2 * x * y + 2 * z * w, 1 - 2 * x**2 - 2 * z**2, 2 * y * z - 2 * x * w],
+            [2 * x * z - 2 * y * w, 2 * y * z + 2 * x * w, 1 - 2 * x**2 - 2 * y**2]
+        ])
+        return rotation_matrix
 
 
 
