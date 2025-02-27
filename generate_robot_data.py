@@ -35,7 +35,7 @@ class MujocoActor:
                  diffuse_light_params=(0.5, 0.5, 0.5),
                  ambient_light_params=(0.5, 0.5, 0.5),
                  resolution=(256, 256),
-                 pcd_max_points=10_000,
+                 pcd_max_points=20_000,
                  ):
 
         self.model_xml_dir = model_xml_dir
@@ -112,10 +112,10 @@ class MujocoActor:
 
         combined_pcd = o3d.geometry.PointCloud()
         for pcd in pcds: #downsample point cloud from each viewpoint
-            voxel_size = 0.01
+            voxel_size = 0.0005
             pcd = pcd.voxel_down_sample(voxel_size=voxel_size)
             combined_pcd += pcd
-        voxel_size = 0.005
+        voxel_size = 0.0001
         while len(combined_pcd.points) > self.pcd_max_points: #globally downsample
             voxel_size *= 1.01
             combined_pcd = combined_pcd.voxel_down_sample(voxel_size=voxel_size)

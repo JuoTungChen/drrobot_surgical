@@ -70,6 +70,7 @@ class PipelineParams(ParamGroup):
         self.debug = False
         super().__init__(parser, "Pipeline Parameters")
 
+
 class OptimizationParams(ParamGroup):
     def __init__(self, parser):
         self.iterations = 30_000
@@ -90,7 +91,7 @@ class OptimizationParams(ParamGroup):
         self.densify_grad_threshold = 0.0002
         self.random_background = True
 
-        self.dataset_path = "/home/iulian/chole_ws/src/drrobot/data/LND_short" #this should be the path that generate_robot_data.py was run from
+        self.dataset_path = "" #this should be the path that generate_robot_data.py was run from
         self.num_init_gaussians = 10_000 #initial number of points to use for the gaussian model
 
         ####### kplane params, not relevant to dr. robot  ############
@@ -135,12 +136,12 @@ class OptimizationParams(ParamGroup):
         #### lrs + dr.robot params ####
         self.learn_rotations = False
         self.lambda_depth = 0.5
-        self.canonical_training_iterations = 2_500
+        self.canonical_training_iterations = 1_500
         self.pose_conditioned_training_iterations = 100_000
 
         self.lrs_train_steps = 1e6 #minimum of this and the number of samples in dataset
-        self.lrs_train_epochs = 2
-        self.lrs_lr = 3e-4
+        self.lrs_train_epochs = 1
+        self.lrs_lr = 1e-4
 
         self.appearance_deform_lr = 1e-5
         self.no_appearance_deformation = True
