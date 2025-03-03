@@ -148,7 +148,7 @@ def generate_initial_pose(example_camera, divide_number_angle, divide_number_pos
     cam = mujoco.MjvCamera()
     mujoco.mjv_defaultCamera(cam)
     cam.distance = 0.1
-    cam.azimuth = -50.0
+    cam.azimuth = 90.0
     cam.elevation = -10
     cam.lookat = (0, 0, -0.0)
     w2v = compute_camera_extrinsic_matrix(cam)
@@ -159,7 +159,8 @@ def generate_initial_pose(example_camera, divide_number_angle, divide_number_pos
         t1_down=max((average_center[0]-128)/256*0.08-0.005,-0.04)
 
         # Generate uniformly spaced values for theta, t[0] and t[1]
-        thetas = np.linspace(-np.pi, np.pi, divide_number_angle)
+        thetas = np.linspace(2 * np.pi / 3, np.pi, divide_number_angle)
+        #thetas = np.linspace(-np.pi, np.pi, divide_number_angle)
         t0_vals = np.linspace(t0_down, t0_up, divide_number_pos)
         t1_vals = np.linspace(t1_down, t1_up, divide_number_pos)
     else:
@@ -322,7 +323,7 @@ class PoseEstimator:
         self.ee_point_idx = self.calculate_ee_point()
 
         # Initialize parameters
-        self.home_pose = [0.0, 0.0, 0.0]
+        self.home_pose = [0.0, 0.1, 0.1]
         # self.home_pose = [0.0, 0.2, -0.5]
 
 
@@ -440,9 +441,9 @@ class PoseEstimator:
         self.reference_image = torch.tensor(np.array(self.reference_image) / 255.0).permute(2, 0, 1).float().to("cuda")  # Normalized [0, 1]
         self.reference_image = Utils.pad_to_match_aspect(self.reference_image, 1.0)
 
-        if first_img:
-            enhanced_image = FT.adjust_brightness(self.reference_image, brightness_factor=0.8)  # Increase brightness by 20%
-            self.reference_image = FT.adjust_contrast(enhanced_image, contrast_factor=0.5)    # Increase contrast by 50%
+        #if first_img:
+        #    enhanced_image = FT.adjust_brightness(self.reference_image, brightness_factor=0.8)  # Increase brightness by 20%
+        #    self.reference_image = FT.adjust_contrast(enhanced_image, contrast_factor=0.5)    # Increase contrast by 50%
 
         self.reference_image = F.interpolate(self.reference_image.unsqueeze(0), size=(256,256), mode='bilinear', align_corners=False).squeeze(0)
         self.reference_image_small = F.interpolate(self.reference_image.unsqueeze(0), size=(224,224), mode='bilinear', align_corners=False).squeeze(0)
@@ -553,11 +554,18 @@ class PoseEstimator:
         plt.show()
 
 
-    def display_overlay(self):
+    def display_overlay(self, ori_path):
         ## ------ Compare the final rendered image and the reference image with overlay ------ ##
         # final_render = torch.clamp(render(self.camera, self.gaussians, self.background_color)['render'], 0, 1)
         # padded_rendered_image = Utils.pad_to_match_aspect(final_render, self.target_aspect_ratio)
+        print(ori_path)
+        original_image = Image.open(ori_path).convert('RGB')
 
+        original_image = torch.tensor(np.array(original_image) / 255.0).permute(2, 0, 1).float().to("cuda")  # Normalized [0, 1]
+        original_image= Utils.pad_to_match_aspect(original_image, 1.0)
+
+        original_image = F.interpolate(original_image.unsqueeze(0), size=(256,256), mode='bilinear', align_corners=False).squeeze(0)
+        original_image = original_image.detach().permute(1,2,0).cpu().numpy()
         # Convert images for visualization
         rendered_image_np = self.video[-1].detach().permute(1, 2, 0).cpu().numpy()
         # rendered_image_np = padded_rendered_image.detach().permute(1, 2, 0).cpu().numpy()
@@ -565,7 +573,8 @@ class PoseEstimator:
 
         # Alpha blending (overlay with transparency)
         alpha = 0.3
-        blended_image = (alpha * rendered_image_np + (1 - alpha) * ground_truth_image_np)
+        blended_image = (alpha * rendered_image_np + (1 - alpha) * original_image)
+        #blended_image = (alpha * rendered_image_np + (1 - alpha) * ground_truth_image_np)
 
         # Extract silhouette using threshold and contour detection
         rendered_mask = np.any(rendered_image_np > 0.05, axis=-1)  # Threshold for silhouette detection
@@ -597,7 +606,8 @@ class PoseEstimator:
 
         ax.axis('off')
 
-        plt.show()
+        #plt.show()
+        plt.savefig("overlay_output.jpg")
 
     def get_preset_pose(self):
 
@@ -680,25 +690,22 @@ class PoseEstimator:
         average_center=compute_initial_position(img)
         # self.average_center = self.compute_initial_position()
         if first_run:
-            angle_divide_num=36
-            distance_divide_num=3
+            angle_divide_num=12
+            distance_divide_num=2
         else:
             angle_divide_num=1
             distance_divide_num=1
 
-        # best_final_loss_index, best_initial_loss_index=grid_search_best_pose(average_center, self.camera, self.gaussians, self.background_color, self.reference_image, self.home_pose, angle_divide_num,distance_divide_num, first_run, self.first_run_result)
-        # print("Best final loss index:", best_final_loss_index)
-        # print("Best initial loss index:", best_initial_loss_index)
+        best_final_loss_index, best_initial_loss_index=grid_search_best_pose(average_center, self.camera, self.gaussians, self.background_color, self.reference_image, self.home_pose, angle_divide_num,distance_divide_num, first_run, self.first_run_result)
+        print("Best final loss index:", best_final_loss_index)
+        print("Best initial loss index:", best_initial_loss_index)
 
-
-        # best_final_loss_index, best_initial_loss_index = self.grid_search_best_pose()
-
-        # print("best_final_loss_index", best_final_loss_index)
-        # print("best_initial_loss_index", best_initial_loss_index)
+        #best_final_loss_index = 297
+        #best_initial_loss_index = 301
 
         example_camera = self.sample_cameras[0]
         # if first_run:
-        #     T_rotated_torch, result=generate_initial_pose(example_camera, angle_divide_num,distance_divide_num, best_final_loss_index, average_center,first_run, self.first_run_result)
+        T_rotated_torch, result=generate_initial_pose(example_camera, angle_divide_num,distance_divide_num, best_final_loss_index, average_center,first_run, self.first_run_result)
         #     self.first_run_result= result
         # else:
         #     T_rotated_torch,_=generate_initial_pose(example_camera, angle_divide_num,distance_divide_num, best_final_loss_index, average_center,first_run, self.first_run_result)
@@ -712,10 +719,10 @@ class PoseEstimator:
         # [ 2.0000e-02,  0.0000e+00,  1.0000e-01,  1.0000e+00]])
 
         ## needle pickup
-        T_rotated_torch =  torch.tensor([[-5.0000e-01, -8.6603e-01,  6.0302e-17,  0.0000e+00],
-        [-1.5038e-01,  8.6824e-02, -9.8481e-01,  0.0000e+00],
-        [ 8.5287e-01, -4.9240e-01, -1.7365e-01,  0.0000e+00],
-        [ 1.5000e-02, -5.0000e-03,  7.5000e-02,  1.0000e+00]])
+        # T_rotated_torch =  torch.tensor([[-5.0000e-01, -8.6603e-01,  6.0302e-17,  0.0000e+00],
+        # [-1.5038e-01,  8.6824e-02, -9.8481e-01,  0.0000e+00],
+        # [ 8.5287e-01, -4.9240e-01, -1.7365e-01,  0.0000e+00],
+        # [ 1.5000e-02, -5.0000e-03,  7.5000e-02,  1.0000e+00]])
         # T_rotated_torch=self.generate_initial_pose(example_camera, best_final_loss_index)
         # print("T_rotated_torch", T_rotated_torch)
 
@@ -738,15 +745,15 @@ class PoseEstimator:
         ])
 
 
-        # result = render(self.camera, self.gaussians, self.background_color)
+        #result = render(self.camera, self.gaussians, self.background_color)
 
-        # # Use the raw alpha channel as a continuous mask
-        # mask = result['render']  # Continuous alpha values, directly from render_alphas
+        # Use the raw alpha channel as a continuous mask
+        #mask = result['render']  # Continuous alpha values, directly from render_alphas
 
-        # plt.figure()
+        #plt.figure()
 
-        # # Display the mask (optional, normalized for visualization)
-        # Utils.display_render(torch.clamp(mask, 0, 1))
+        # Display the mask (optional, normalized for visualization)
+        #Utils.display_render(torch.clamp(mask, 0, 1))
 
 
         # print("\n------------------- Optimizing -------------------\n")
